@@ -16,7 +16,7 @@ package org.apache.spark.sql.execution.datasources.v2
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.ResolvedIdentifier
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
-import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, CreateTag, LogicalPlan, Optimize, Vacuum}
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.execution.{SparkPlan, SparkStrategy}
 
@@ -41,6 +41,9 @@ case class LanceDataSourceV2Strategy(session: SparkSession) extends SparkStrateg
         method,
         columns,
         args) :: Nil
+
+    case CreateTag(ResolvedIdentifier(catalog, ident), tagName, version) =>
+      CreateTagExec(asTableCatalog(catalog), ident, tagName, version) :: Nil
 
     case _ => Nil
   }
