@@ -15,7 +15,7 @@ package org.apache.spark.sql.catalyst.parser.extensions
 
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedIdentifier, UnresolvedRelation}
 import org.apache.spark.sql.catalyst.parser.ParserInterface
-import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, CreateTag, LogicalPlan, NamedArgument, Optimize, Vacuum}
+import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, CreateTag, DropTag, LogicalPlan, NamedArgument, Optimize, Vacuum}
 
 import scala.jdk.CollectionConverters._
 
@@ -88,6 +88,12 @@ class LanceSqlExtensionsAstBuilder(delegate: ParserInterface)
     val tagName = ctx.tagName.getText
     val version = Option(ctx.version).map(_.accept(this))
     CreateTag(table, tagName, version)
+  }
+
+  override def visitDropTag(ctx: LanceSqlExtensionsParser.DropTagContext): DropTag = {
+    val table = UnresolvedIdentifier(visitMultipartIdentifier(ctx.multipartIdentifier()))
+    val tagName = ctx.tagName.getText
+    DropTag(table, tagName)
   }
 
   override def visitNumericVersion(ctx: LanceSqlExtensionsParser.NumericVersionContext)
