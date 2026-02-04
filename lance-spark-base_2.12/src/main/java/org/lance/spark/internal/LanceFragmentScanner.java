@@ -160,7 +160,7 @@ public class LanceFragmentScanner implements AutoCloseable {
     return inputPartition;
   }
 
-  private static List<String> getColumnNames(StructType schema) {
+  public static List<String> getColumnNames(StructType schema) {
     return Arrays.stream(schema.fields())
         .map(StructField::name)
         .filter(
@@ -173,13 +173,13 @@ public class LanceFragmentScanner implements AutoCloseable {
         .collect(Collectors.toList());
   }
 
-  private static boolean getWithRowId(StructType schema) {
+  public static boolean getWithRowId(StructType schema) {
     return Arrays.stream(schema.fields())
         .map(StructField::name)
         .anyMatch(name -> name.equals(LanceConstant.ROW_ID));
   }
 
-  private static boolean getWithRowAddress(StructType schema) {
+  public static boolean getWithRowAddress(StructType schema) {
     return Arrays.stream(schema.fields())
         .map(StructField::name)
         .anyMatch(name -> name.equals(LanceConstant.ROW_ADDRESS));
