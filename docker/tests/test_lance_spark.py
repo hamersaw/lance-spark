@@ -35,25 +35,19 @@ def spark():
     session.stop()
 
 
-def drop_table(spark, table_name):
-    """Drop a table, using PURGE only on Spark >= 3.5."""
-    purge = " PURGE" if SPARK_VERSION >= Version("3.5") else ""
-    spark.sql(f"DROP TABLE IF EXISTS {table_name}{purge}")
-
-
 @pytest.fixture(autouse=True)
 def cleanup_tables(spark):
     """Clean up test tables before and after each test."""
-    drop_table(spark, "default.test_table")
-    drop_table(spark, "default.employees")
+    spark.sql("DROP TABLE IF EXISTS default.test_table PURGE")
+    spark.sql("DROP TABLE IF EXISTS default.employees PURGE")
     # TODO - reenable once `tableExists` works on Spark 4.0
     #spark.catalog.dropTempView("source") if spark.catalog.tableExists("source") else None
     #spark.catalog.dropTempView("tmp_view") if spark.catalog.tableExists("tmp_view") else None
     spark.catalog.dropTempView("source")
     spark.catalog.dropTempView("tmp_view")
     yield
-    drop_table(spark, "default.test_table")
-    drop_table(spark, "default.employees")
+    spark.sql("DROP TABLE IF EXISTS default.test_table PURGE")
+    spark.sql("DROP TABLE IF EXISTS default.employees PURGE")
     # TODO - reenable once `tableExists` works on Spark 4.0
     #spark.catalog.dropTempView("source") if spark.catalog.tableExists("source") else None
     #spark.catalog.dropTempView("tmp_view") if spark.catalog.tableExists("tmp_view") else None
@@ -148,7 +142,7 @@ class TestDDLTable:
             )
         """)
 
-        drop_table(spark, "default.test_table")
+        spark.sql("DROP TABLE IF EXISTS default.test_table PURGE")
 
         tables = spark.sql("SHOW TABLES IN default").collect()
         table_names = [row.tableName for row in tables]
