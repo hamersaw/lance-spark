@@ -11,22 +11,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.lance.spark.bundle;
+package org.lance.spark.update;
 
-/**
- * Information about the Lance Spark Bundle for Spark 3.4 with Scala 2.13.
- *
- * <p>This is a bundled JAR containing all necessary dependencies for the Lance Spark connector.
- */
-public final class BundleInfo {
-  private BundleInfo() {
-    // Utility class
-  }
-
-  /**
-   * @return the bundle name
-   */
-  public static String getBundleName() {
-    return "lance-spark-bundle-3.4_2.13";
-  }
+public class UpdateColumnsBackfillTest extends BaseUpdateColumnsBackfillTest {
+  // All test methods are inherited from BaseUpdateColumnsBackfillTest
 }

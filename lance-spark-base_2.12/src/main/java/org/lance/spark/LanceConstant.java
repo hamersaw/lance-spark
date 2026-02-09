@@ -23,4 +23,5 @@ public class LanceConstant {
   public static final String BLOB_SIZE_SUFFIX = "__blob_size";
 
   public static final String BACKFILL_COLUMNS_KEY = "backfill_columns";
+  public static final String UPDATE_COLUMNS_KEY = "update_columns";
 }

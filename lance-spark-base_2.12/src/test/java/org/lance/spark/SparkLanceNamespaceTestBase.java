@@ -13,9 +13,12 @@
  */
 package org.lance.spark;
 
+import org.lance.Version;
+
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.connector.catalog.Identifier;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +55,7 @@ public abstract class SparkLanceNamespaceTestBase {
             .config(
                 "spark.sql.catalog." + catalogName, "org.lance.spark.LanceNamespaceSparkCatalog")
             .config("spark.sql.catalog." + catalogName + ".impl", getNsImpl())
+            .config("spark.sql.session.timeZone", "UTC")
             .getOrCreate();
 
     Map<String, String> additionalConfigs = getAdditionalNsConfigs();
@@ -92,6 +97,54 @@ public abstract class SparkLanceNamespaceTestBase {
    */
   protected String generateTableName(String baseName) {
     return baseName + "_" + UUID.randomUUID().toString().replace("-", "");
+  }
+
+  @Test
+  public void testTimeTravelVersionAsOf() throws Exception {
+    String tableName = generateTableName("time_travel_version");
+    String fullName = catalogName + ".default." + tableName;
+
+    spark.sql("CREATE TABLE " + fullName + " (id INT NOT NULL, name STRING)");
+    assertTrue(checkDataset(0, fullName));
+
+    spark.sql("INSERT INTO " + fullName + " VALUES (1, 'v1')");
+    assertTrue(checkDataset(1, fullName));
+    spark.sql("INSERT INTO " + fullName + " VALUES (2, 'v2')");
+    assertTrue(checkDataset(2, fullName));
+
+    // time travel to version 2 (the second insert)
+    Dataset<Row> actual = spark.sql("SELECT * FROM " + fullName + " VERSION AS OF " + "2");
+    List<Row> res = actual.collectAsList();
+    assertEquals(1, res.size());
+  }
+
+  @Test
+  public void testTimeTravelTimestampAsOf() throws Exception {
+    String tableName = generateTableName("time_travel_version");
+    String fullName = catalogName + ".default." + tableName;
+
+    spark.sql("CREATE TABLE " + fullName + " (id INT NOT NULL, name STRING)");
+    assertTrue(checkDataset(0, fullName));
+
+    spark.sql("INSERT INTO " + fullName + " VALUES (1, 'v1')");
+    assertTrue(checkDataset(1, fullName));
+
+    Thread.sleep(1000);
+    spark.sql("INSERT INTO " + fullName + " VALUES (2, 'v2')");
+    assertTrue(checkDataset(2, fullName));
+
+    Version version = getLatestVersion(tableName);
+    spark.sql("INSERT INTO " + fullName + " VALUES (3, 'v3')");
+    assertTrue(checkDataset(3, fullName));
+
+    DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    String date = version.getDataTime().format(format);
+
+    // time travel to timestamp before second insert
+    Dataset<Row> actual =
+        spark.sql("SELECT * FROM " + fullName + " TIMESTAMP AS OF '" + date + "'");
+    List<Row> res = actual.collectAsList();
+    assertEquals(1, res.size());
   }
 
   @Test
@@ -541,6 +594,58 @@ public abstract class SparkLanceNamespaceTestBase {
   }
 
   @Test
+  public void testInsertOverwrite() throws Exception {
+    String tableName = generateTableName("insert_overwrite_test");
+    String fullName = catalogName + ".default." + tableName;
+
+    // Create table and insert initial data
+    spark.sql("CREATE TABLE " + fullName + " (id INT NOT NULL, name STRING)");
+    spark.sql("INSERT INTO " + fullName + " VALUES (1, 'Alice'), (2, 'Bob')");
+    assertEquals(2, spark.sql("SELECT * FROM " + fullName).count());
+
+    // Use INSERT OVERWRITE to replace all data
+    spark.sql("INSERT OVERWRITE " + fullName + " VALUES (3, 'Charlie'), (4, 'David'), (5, 'Eve')");
+    assertEquals(3, spark.sql("SELECT * FROM " + fullName).count());
+
+    // Verify old data is gone and new data exists
+    List<Row> rows = spark.sql("SELECT * FROM " + fullName + " ORDER BY id").collectAsList();
+    assertEquals(3, rows.get(0).getInt(0));
+    assertEquals("Charlie", rows.get(0).getString(1));
+    assertEquals(4, rows.get(1).getInt(0));
+    assertEquals("David", rows.get(1).getString(1));
+    assertEquals(5, rows.get(2).getInt(0));
+    assertEquals("Eve", rows.get(2).getString(1));
+  }
+
+  @Test
+  public void testInsertOverwriteWithSelect() throws Exception {
+    String sourceTable = generateTableName("source_table");
+    String targetTable = generateTableName("target_table");
+    String sourceFullName = catalogName + ".default." + sourceTable;
+    String targetFullName = catalogName + ".default." + targetTable;
+
+    // Create source table with data
+    spark.sql("CREATE TABLE " + sourceFullName + " (id INT NOT NULL, name STRING)");
+    spark.sql("INSERT INTO " + sourceFullName + " VALUES (10, 'New1'), (20, 'New2')");
+
+    // Create target table with initial data
+    spark.sql("CREATE TABLE " + targetFullName + " (id INT NOT NULL, name STRING)");
+    spark.sql("INSERT INTO " + targetFullName + " VALUES (1, 'Old1'), (2, 'Old2')");
+    assertEquals(2, spark.sql("SELECT * FROM " + targetFullName).count());
+
+    // Use INSERT OVERWRITE with SELECT to replace data
+    spark.sql("INSERT OVERWRITE " + targetFullName + " SELECT * FROM " + sourceFullName);
+    assertEquals(2, spark.sql("SELECT * FROM " + targetFullName).count());
+
+    // Verify data was replaced
+    List<Row> rows = spark.sql("SELECT * FROM " + targetFullName + " ORDER BY id").collectAsList();
+    assertEquals(10, rows.get(0).getInt(0));
+    assertEquals("New1", rows.get(0).getString(1));
+    assertEquals(20, rows.get(1).getInt(0));
+    assertEquals("New2", rows.get(1).getString(1));
+  }
+
+  @Test
   public void testOnePartIdentifier() throws Exception {
     String tableName = generateTableName("one_part_test");
 
@@ -569,5 +674,37 @@ public abstract class SparkLanceNamespaceTestBase {
     Row row = result.collectAsList().get(0);
     assertEquals(42L, row.getLong(0));
     assertEquals(3.14, row.getDouble(1), 0.001);
+  }
+
+  private boolean checkDataset(int expectedSize, String tableName) {
+    Dataset<Row> actual = spark.sql("SELECT * FROM " + tableName);
+    List<Row> res = actual.collectAsList();
+
+    return expectedSize == res.size();
+  }
+
+  private Version getLatestVersion(String tableName) throws Exception {
+    Identifier ident = Identifier.of(new String[] {"default"}, tableName);
+    LanceDataset lanceTable = (LanceDataset) catalog.loadTable(ident);
+    LanceSparkReadOptions readOptions = lanceTable.readOptions();
+    try (org.lance.Dataset dataset = openLatestDataset(readOptions)) {
+      return dataset.getVersion();
+    }
+  }
+
+  private org.lance.Dataset openLatestDataset(LanceSparkReadOptions readOptions) {
+    if (readOptions.hasNamespace()) {
+      return org.lance.Dataset.open()
+          .allocator(LanceRuntime.allocator())
+          .namespace(readOptions.getNamespace())
+          .tableId(readOptions.getTableId())
+          .readOptions(readOptions.toReadOptions())
+          .build();
+    }
+    return org.lance.Dataset.open()
+        .allocator(LanceRuntime.allocator())
+        .uri(readOptions.getDatasetUri())
+        .readOptions(readOptions.toReadOptions())
+        .build();
   }
 }
