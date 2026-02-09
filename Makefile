@@ -20,6 +20,11 @@ MODULE := lance-spark-$(SPARK_VERSION)_$(SCALA_VERSION)
 BUNDLE_MODULE := lance-spark-bundle-$(SPARK_VERSION)_$(SCALA_VERSION)
 BASE_MODULE := lance-spark-base_$(SCALA_VERSION)
 
+# Optional Docker build cache flags (set in CI for layer caching)
+# Example: make docker-build-minimal DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
+DOCKER_CACHE_FROM ?=
+DOCKER_CACHE_TO ?=
+
 DOCKER_COMPOSE := $(shell \
 	if docker compose version >/dev/null 2>&1; then \
 		echo "docker compose"; \
