@@ -37,8 +37,7 @@ def spark():
 
 def drop_table(spark, table_name):
     """Drop a table, using PURGE only on Spark >= 3.5."""
-    #purge = " PURGE" if SPARK_VERSION >= Version("3.5") else ""
-    purge = "PURGE"
+    purge = " PURGE" if SPARK_VERSION >= Version("3.5") else ""
     spark.sql(f"DROP TABLE IF EXISTS {table_name}{purge}")
 
 
