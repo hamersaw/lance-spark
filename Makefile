@@ -25,6 +25,18 @@ include docker/versions.mk
 SPARK_DOWNLOAD_VERSION := $(SPARK_DOWNLOAD_VERSION_$(SPARK_VERSION))
 PY4J_VERSION := $(PY4J_VERSION_$(SPARK_VERSION))
 
+# Spark 3.x default binaries are Scala 2.12; Scala 2.13 needs explicit suffix.
+# Spark 4.0 only supports Scala 2.13, so no suffix is needed.
+ifeq ($(SCALA_VERSION),2.13)
+  ifneq ($(SPARK_VERSION),4.0)
+    SPARK_SCALA_SUFFIX := -scala2.13
+  else
+    SPARK_SCALA_SUFFIX :=
+  endif
+else
+  SPARK_SCALA_SUFFIX :=
+endif
+
 # Optional Docker build cache flags (set in CI for layer caching)
 # Example: make docker-build-minimal DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
 DOCKER_CACHE_FROM ?=
@@ -113,6 +125,7 @@ docker-build:
 		--build-arg SPARK_DOWNLOAD_VERSION=$(SPARK_DOWNLOAD_VERSION) \
 		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
 		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
+		--build-arg SPARK_SCALA_SUFFIX=$(SPARK_SCALA_SUFFIX) \
 		spark-lance
 
 .PHONY: docker-up
@@ -138,6 +151,7 @@ docker-build-minimal:
 		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
 		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
 		--build-arg PY4J_VERSION=$(PY4J_VERSION) \
+		--build-arg SPARK_SCALA_SUFFIX=$(SPARK_SCALA_SUFFIX) \
 		-f Dockerfile.minimal \
 		-t spark-lance-minimal:$(SPARK_VERSION)_$(SCALA_VERSION) \
 		.
