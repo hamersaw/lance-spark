@@ -106,8 +106,8 @@ jobs:
       - name: Run tests
         run: make test SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}
 
-  docker-test:
-    name: Docker Test Spark ${{ matrix.spark-version }} / Scala ${{ matrix.scala-version }}
+  integration-test:
+    name: Integration Test Spark ${{ matrix.spark-version }} / Scala ${{ matrix.scala-version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -137,6 +137,6 @@ jobs:
       - name: Build bundle
         run: make bundle SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}
       - name: Build Docker image
-        run: make docker-build-minimal SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }} DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
+        run: make docker-build-test SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }} DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
       - name: Run Docker integration tests
         run: make docker-test SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}
