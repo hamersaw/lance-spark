@@ -140,7 +140,7 @@ docker-shell:
 docker-down: check-docker-compose
 	cd docker && ${DOCKER_COMPOSE} down
 
-.PHONY: docker-build-integration-base
+.PHONY: docker-build-test-base
 docker-build-test-base:
 	cd docker && docker build \
 		--build-arg SPARK_DOWNLOAD_VERSION=$(SPARK_DOWNLOAD_VERSION) \
@@ -156,8 +156,6 @@ docker-build-test-base:
 docker-build-test:
 	@ls $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar >/dev/null 2>&1 || \
 		(echo "Error: Bundle jar not found. Run 'make bundle' first." && exit 1)
-#	@docker image inspect ghcr.io/hamersaw/lance-spark-test-base:$(SPARK_VERSION)_$(SCALA_VERSION) >/dev/null 2>&1 || \
-#		(echo "Error: Docker image 'ghcr.io/hamersaw/lance-spark-test-base:$(SPARK_VERSION)_$(SCALA_VERSION)' not found. Run 'make docker-build-test-base' first." && exit 1)
 	rm -f docker/lance-spark-bundle-*.jar
 	cp $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar docker/
 	cd docker && docker build --no-cache \
@@ -167,21 +165,21 @@ docker-build-test:
 		-t lance-spark-test:$(SPARK_VERSION)_$(SCALA_VERSION) \
 		.
 
-#.PHONY: docker-build-minimal
-#docker-build-minimal:
-#	@ls $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar >/dev/null 2>&1 || \
-#		(echo "Error: Bundle jar not found. Run 'make bundle' first." && exit 1)
-#	rm -f docker/lance-spark-bundle-*.jar
-#	cp $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar docker/
-#	cd docker && docker build \
-#		--build-arg SPARK_DOWNLOAD_VERSION=$(SPARK_DOWNLOAD_VERSION) \
-#		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
-#		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
-#		--build-arg PY4J_VERSION=$(PY4J_VERSION) \
-#		--build-arg SPARK_SCALA_SUFFIX=$(SPARK_SCALA_SUFFIX) \
-#		-f Dockerfile.minimal \
-#		-t spark-lance-minimal:$(SPARK_VERSION)_$(SCALA_VERSION) \
-#		.
+.PHONY: docker-build-test-full
+docker-build-test-full:
+	@ls $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar >/dev/null 2>&1 || \
+		(echo "Error: Bundle jar not found. Run 'make bundle' first." && exit 1)
+	rm -f docker/lance-spark-bundle-*.jar
+	cp $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar docker/
+	cd docker && docker build \
+		--build-arg SPARK_DOWNLOAD_VERSION=$(SPARK_DOWNLOAD_VERSION) \
+		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
+		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
+		--build-arg PY4J_VERSION=$(PY4J_VERSION) \
+		--build-arg SPARK_SCALA_SUFFIX=$(SPARK_SCALA_SUFFIX) \
+		-f Dockerfile.minimal \
+		-t lance-spark-test:$(SPARK_VERSION)_$(SCALA_VERSION) \
+		.
 
 .PHONY: docker-test
 docker-test:
