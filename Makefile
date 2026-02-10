@@ -38,7 +38,7 @@ else
 endif
 
 # Optional Docker build cache flags (set in CI for layer caching)
-# Example: make docker-build-minimal DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
+# Example: make docker-build-test-full DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
 DOCKER_CACHE_FROM ?=
 DOCKER_CACHE_TO ?=
 
@@ -177,7 +177,7 @@ docker-build-test-full:
 		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
 		--build-arg PY4J_VERSION=$(PY4J_VERSION) \
 		--build-arg SPARK_SCALA_SUFFIX=$(SPARK_SCALA_SUFFIX) \
-		-f Dockerfile.minimal \
+		-f Dockerfile.test-full \
 		-t lance-spark-test:$(SPARK_VERSION)_$(SCALA_VERSION) \
 		.
 
@@ -226,11 +226,12 @@ help:
 	@echo "  clean          - Clean all modules"
 	@echo ""
 	@echo "Docker commands:"
-	@echo "  docker-build   - Build docker image with Spark 3.5/Scala 2.12 bundle"
-	@echo "  docker-up      - Start docker containers"
-	@echo "  docker-shell   - Open shell in spark-lance container"
-	@echo "  docker-down    - Stop docker containers"
-	@echo "  docker-test    - Run integration tests in spark-lance-minimal container"
+	@echo "  docker-build           - Build docker image with Spark 3.5/Scala 2.12 bundle"
+	@echo "  docker-up              - Start docker containers"
+	@echo "  docker-shell           - Open shell in spark-lance container"
+	@echo "  docker-down            - Stop docker containers"
+	@echo "  docker-build-test-full - Build test image (with Spark and bundle)"
+	@echo "  docker-test            - Run integration tests in lance-spark-test container"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  serve-docs     - Serve documentation locally"
