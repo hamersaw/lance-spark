@@ -17,6 +17,12 @@ from pyspark.sql import SparkSession
 
 SPARK_VERSION = Version(os.environ.get("SPARK_VERSION", "3.5"))
 
+# UPDATE and MERGE require Spark 3.5+ (RewriteUpdateTable/RewriteMergeIntoTable rules)
+requires_update_or_merge = pytest.mark.skipif(
+    SPARK_VERSION < Version("3.5"),
+    reason="UPDATE/MERGE require Spark 3.5+ (row-level rewrite rules not available in 3.4)"
+)
+
 
 @pytest.fixture(scope="module")
 def spark():
@@ -550,6 +556,7 @@ class TestDDLVacuum:
         count = spark.table("default.test_table").count()
         assert count == 50
 
+    @requires_update_or_merge
     def test_vacuum_preserves_current_data(self, spark):
         """Test VACUUM preserves all current data."""
         spark.sql("""
@@ -835,6 +842,7 @@ class TestDMLInsert:
         assert count == 4
 
 
+@requires_update_or_merge
 class TestDMLUpdate:
     """Test DML UPDATE SET operations."""
 
@@ -962,6 +970,7 @@ class TestDMLDelete:
         assert "Marketing" not in departments
 
 
+@requires_update_or_merge
 class TestDMLMerge:
     """Test DML MERGE INTO operations."""
 
