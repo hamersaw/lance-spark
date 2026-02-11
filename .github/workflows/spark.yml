@@ -136,7 +136,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
       - name: Build bundle
         run: make bundle SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}
-      - name: Build Docker image
-        run: make docker-build-test-full SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }} DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
+      - name: Build Docker base image
+        run: make docker-build-test-base SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }} DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
+      - name: Build Docker test image
+        run: make docker-build-test SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}
       - name: Run Docker integration tests
         run: make docker-test SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}

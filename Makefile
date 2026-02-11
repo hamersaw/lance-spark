@@ -142,14 +142,17 @@ docker-down: check-docker-compose
 
 .PHONY: docker-build-test-base
 docker-build-test-base:
-	cd docker && docker build \
+	cd docker && docker buildx build \
+		$(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM),) \
+		$(if $(DOCKER_CACHE_TO),--cache-to $(DOCKER_CACHE_TO),) \
+		--load \
 		--build-arg SPARK_DOWNLOAD_VERSION=$(SPARK_DOWNLOAD_VERSION) \
 		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
 		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
 		--build-arg PY4J_VERSION=$(PY4J_VERSION) \
 		--build-arg SPARK_SCALA_SUFFIX=$(SPARK_SCALA_SUFFIX) \
 		-f Dockerfile.test-base \
-		-t ghcr.io/hamersaw/lance-spark-test-base:$(SPARK_VERSION)_$(SCALA_VERSION) \
+		-t lance-spark-test-base:$(SPARK_VERSION)_$(SCALA_VERSION) \
 		.
 
 .PHONY: docker-build-test
