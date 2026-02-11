@@ -21,10 +21,13 @@ RUN apt-get update && \
 
 RUN npm install -g azurite
 
+RUN curl -o /usr/local/bin/minio https://dl.min.io/server/minio/release/linux-amd64/minio && \
+    chmod +x /usr/local/bin/minio
+
 RUN python3 -m venv /opt/venv && \
     . /opt/venv/bin/activate && \
     pip install --upgrade pip && \
-    pip install pytest pytest-timeout packaging azure-storage-blob
+    pip install pytest pytest-timeout packaging azure-storage-blob boto3
 
 ENV PATH="/opt/venv/bin:$PATH"
 ENV SPARK_HOME="/opt/spark"
