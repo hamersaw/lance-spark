@@ -2,6 +2,9 @@
 Shared fixtures for Lance-Spark integration tests.
 
 Fixtures defined here are available to all test modules under docker/tests/.
+
+The ``spark`` fixture is parameterized over storage backends (local filesystem,
+Azurite, MinIO) so that every test is automatically exercised against all three.
 """
 
 import subprocess
@@ -10,6 +13,7 @@ import urllib.request
 import urllib.error
 
 import pytest
+from pyspark.sql import SparkSession
 
 # ---------------------------------------------------------------------------
 # Azurite (Azure Blob Storage emulator) configuration
@@ -28,8 +32,7 @@ def azurite():
     """Start Azurite blob service, create the test container, and yield config.
 
     This fixture is **not** autouse — it only runs when a test explicitly
-    depends on it (directly or transitively).  Running
-    ``pytest test_lance_spark.py`` alone will never start Azurite.
+    depends on it (directly or transitively via the ``spark`` fixture).
     """
     proc = subprocess.Popen(
         [
@@ -101,8 +104,7 @@ def minio():
     """Start MinIO server, create the test bucket, and yield config.
 
     This fixture is **not** autouse — it only runs when a test explicitly
-    depends on it (directly or transitively).  Running
-    ``pytest test_lance_spark.py`` alone will never start MinIO.
+    depends on it (directly or transitively via the ``spark`` fixture).
     """
     import os
 
@@ -157,3 +159,87 @@ def minio():
 
     proc.terminate()
     proc.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Parameterized Spark session (runs every test against each backend)
+# ---------------------------------------------------------------------------
+CATALOG = "lance"
+
+
+@pytest.fixture(scope="module", params=["local", "azurite", "minio"])
+def spark(request):
+    """Create a Spark session configured with Lance catalog.
+
+    Parameterized across storage backends so the full test suite runs against
+    each one:
+
+    - **local** – local filesystem at ``/home/lance/data``
+    - **azurite** – Azure Blob Storage via the Azurite emulator
+    - **minio** – S3-compatible storage via the MinIO emulator
+    """
+    backend = request.param
+
+    builder = (
+        SparkSession.builder
+        .appName("LanceSparkTests")
+        .config(
+            f"spark.sql.catalog.{CATALOG}",
+            "org.lance.spark.LanceNamespaceSparkCatalog",
+        )
+        .config(f"spark.sql.catalog.{CATALOG}.impl", "dir")
+        .config(
+            "spark.sql.extensions",
+            "org.lance.spark.extensions.LanceSparkSessionExtensions",
+        )
+    )
+
+    if backend == "local":
+        builder = builder.config(
+            f"spark.sql.catalog.{CATALOG}.root", "/home/lance/data",
+        )
+    elif backend == "azurite":
+        az = request.getfixturevalue("azurite")
+        builder = (
+            builder
+            .config(f"spark.sql.catalog.{CATALOG}.root", f"az://{az['container']}")
+            .config(f"spark.sql.catalog.{CATALOG}.storage.account_name", az["account_name"])
+            .config(f"spark.sql.catalog.{CATALOG}.storage.account_key", az["account_key"])
+            .config(f"spark.sql.catalog.{CATALOG}.storage.azure_storage_endpoint", az["endpoint"])
+            .config(f"spark.sql.catalog.{CATALOG}.storage.allow_http", "true")
+        )
+    elif backend == "minio":
+        s3 = request.getfixturevalue("minio")
+        builder = (
+            builder
+            .config(f"spark.sql.catalog.{CATALOG}.root", f"s3://{s3['bucket']}")
+            .config(f"spark.sql.catalog.{CATALOG}.storage.endpoint", s3["endpoint"])
+            .config(f"spark.sql.catalog.{CATALOG}.storage.aws_allow_http", "true")
+            .config(f"spark.sql.catalog.{CATALOG}.storage.access_key_id", s3["access_key"])
+            .config(f"spark.sql.catalog.{CATALOG}.storage.secret_access_key", s3["secret_key"])
+        )
+
+    session = builder.getOrCreate()
+    session.sql(f"SET spark.sql.defaultCatalog={CATALOG}")
+    yield session
+    session.stop()
+
+
+@pytest.fixture(autouse=True)
+def cleanup_tables(spark):
+    """Clean up test tables before and after each test."""
+    spark.sql("DROP TABLE IF EXISTS default.test_table PURGE")
+    spark.sql("DROP TABLE IF EXISTS default.employees PURGE")
+    # TODO - reenable once `tableExists` works on Spark 4.0
+    #spark.catalog.dropTempView("source") if spark.catalog.tableExists("source") else None
+    #spark.catalog.dropTempView("tmp_view") if spark.catalog.tableExists("tmp_view") else None
+    spark.catalog.dropTempView("source")
+    spark.catalog.dropTempView("tmp_view")
+    yield
+    spark.sql("DROP TABLE IF EXISTS default.test_table PURGE")
+    spark.sql("DROP TABLE IF EXISTS default.employees PURGE")
+    # TODO - reenable once `tableExists` works on Spark 4.0
+    #spark.catalog.dropTempView("source") if spark.catalog.tableExists("source") else None
+    #spark.catalog.dropTempView("tmp_view") if spark.catalog.tableExists("tmp_view") else None
+    spark.catalog.dropTempView("source")
+    spark.catalog.dropTempView("tmp_view")
