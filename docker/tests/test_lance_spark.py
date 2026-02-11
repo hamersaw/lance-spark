@@ -1457,6 +1457,7 @@ class TestDQLTimeTravel:
         assert len(result) == 1
         assert result[0].id == 1
 
+    @requires_update_or_merge
     def test_version_as_of_after_update(self, spark):
         """Test VERSION AS OF returns data before an update."""
         spark.sql("""
@@ -1515,6 +1516,7 @@ class TestDQLTimeTravel:
         assert len(result) == 3
 
 
+@requires_update_or_merge
 class TestDMLMergeDelete:
     """Test MERGE INTO with WHEN MATCHED THEN DELETE."""
 
