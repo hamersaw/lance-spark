@@ -233,6 +233,8 @@ help:
 	@echo "  docker-up              - Start docker containers"
 	@echo "  docker-shell           - Open shell in spark-lance container"
 	@echo "  docker-down            - Stop docker containers"
+	@echo "  docker-build-test      - Build test image from base (adding bundle)"
+	@echo "  docker-build-test-base - Build base for test image (with Spark)"
 	@echo "  docker-build-test-full - Build test image (with Spark and bundle)"
 	@echo "  docker-test            - Run integration tests in lance-spark-test container"
 	@echo ""
