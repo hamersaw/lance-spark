@@ -47,6 +47,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -203,6 +204,16 @@ public class UpdateColumnsBackfillBatchWrite implements BatchWrite {
         .build();
   }
 
+  private static class FragmentBuffer {
+    final VectorSchemaRoot data;
+    final org.lance.spark.arrow.LanceArrowWriter writer;
+
+    FragmentBuffer(VectorSchemaRoot data, org.lance.spark.arrow.LanceArrowWriter writer) {
+      this.data = data;
+      this.writer = writer;
+    }
+  }
+
   public static class UpdateColumnsWriter implements DataWriter<InternalRow> {
     private final LanceSparkWriteOptions writeOptions;
     private final StructType schema;
@@ -222,10 +233,8 @@ public class UpdateColumnsBackfillBatchWrite implements BatchWrite {
     private final List<String> tableId;
 
     private long[] fieldsModified;
-    private StructType writerSchema;
-    private int fragmentId = -1;
-    private VectorSchemaRoot data;
-    private org.lance.spark.arrow.LanceArrowWriter writer = null;
+    private final StructType writerSchema;
+    private final Map<Integer, FragmentBuffer> buffers = new HashMap<>();
 
     public UpdateColumnsWriter(
         LanceSparkWriteOptions writeOptions,
@@ -245,55 +254,47 @@ public class UpdateColumnsBackfillBatchWrite implements BatchWrite {
       this.tableId = tableId;
 
       // Build writer schema: only include columns to update + _rowaddr for matching
-      this.writerSchema = new StructType();
-      Arrays.stream(schema.fields())
-          .filter(
-              f ->
-                  updateColumns.contains(f.name())
-                      || f.name().equals(LanceDataset.ROW_ADDRESS_COLUMN.name()))
-          .forEach(f -> writerSchema = writerSchema.add(f));
-
-      createWriter();
+      StructType ws = new StructType();
+      for (org.apache.spark.sql.types.StructField f : schema.fields()) {
+        if (updateColumns.contains(f.name())
+            || f.name().equals(LanceDataset.ROW_ADDRESS_COLUMN.name())) {
+          ws = ws.add(f);
+        }
+      }
+      this.writerSchema = ws;
     }
 
     @Override
     public void write(InternalRow record) throws IOException {
       int fragId = record.getInt(fragmentIdField);
 
-      if (fragmentId == -1) {
-        fragmentId = fragId;
-      }
-
-      if (fragId != fragmentId && data != null) {
-        // New fragment's data is coming, update the current fragment.
-        updateFragment();
-
-        fragmentId = fragId;
-        createWriter();
-      }
+      FragmentBuffer buffer =
+          buffers.computeIfAbsent(
+              fragId,
+              id -> {
+                BufferAllocator allocator = LanceRuntime.allocator();
+                VectorSchemaRoot data =
+                    VectorSchemaRoot.create(
+                        LanceArrowUtils.toArrowSchema(writerSchema, "UTC", false, false),
+                        allocator);
+                org.lance.spark.arrow.LanceArrowWriter writer =
+                    org.lance.spark.arrow.LanceArrowWriter$.MODULE$.create(data, writerSchema);
+                return new FragmentBuffer(data, writer);
+              });
 
       for (int i = 0; i < writerSchema.fields().length; i++) {
-        writer.field(i).write(record, schema.fieldIndex(writerSchema.fields()[i].name()));
+        buffer.writer.field(i).write(record, schema.fieldIndex(writerSchema.fields()[i].name()));
       }
     }
 
-    private void createWriter() {
-      BufferAllocator allocator = LanceRuntime.allocator();
-      data =
-          VectorSchemaRoot.create(
-              LanceArrowUtils.toArrowSchema(writerSchema, "UTC", false, false), allocator);
-
-      writer = org.lance.spark.arrow.LanceArrowWriter$.MODULE$.create(data, writerSchema);
-    }
-
-    private void updateFragment() {
-      writer.finish();
+    private void updateFragment(int fragmentId, FragmentBuffer buffer) {
+      buffer.writer.finish();
 
       ByteArrayOutputStream out = new ByteArrayOutputStream();
-      try (ArrowStreamWriter writer = new ArrowStreamWriter(data, null, out)) {
-        writer.start();
-        writer.writeBatch();
-        writer.end();
+      try (ArrowStreamWriter streamWriter = new ArrowStreamWriter(buffer.data, null, out)) {
+        streamWriter.start();
+        streamWriter.writeBatch();
+        streamWriter.end();
       } catch (IOException e) {
         throw new RuntimeException("Cannot write schema root", e);
       }
@@ -324,13 +325,13 @@ public class UpdateColumnsBackfillBatchWrite implements BatchWrite {
         throw new RuntimeException("Cannot read arrow stream.", e);
       }
 
-      data.close();
+      buffer.data.close();
     }
 
     @Override
     public WriterCommitMessage commit() {
-      if (fragmentId >= 0 && data != null) {
-        updateFragment();
+      for (Map.Entry<Integer, FragmentBuffer> entry : buffers.entrySet()) {
+        updateFragment(entry.getKey(), entry.getValue());
       }
 
       return new TaskCommit(updatedFragments, fieldsModified);
