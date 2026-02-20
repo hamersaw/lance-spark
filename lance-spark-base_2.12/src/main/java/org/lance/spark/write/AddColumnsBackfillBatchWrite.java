@@ -18,18 +18,12 @@ import org.lance.Fragment;
 import org.lance.FragmentMetadata;
 import org.lance.ReadOptions;
 import org.lance.fragment.FragmentMergeResult;
-import org.lance.io.StorageOptionsProvider;
 import org.lance.operation.Merge;
 import org.lance.spark.LanceDataset;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkWriteOptions;
 
 import org.apache.arrow.c.ArrowArrayStream;
-import org.apache.arrow.c.Data;
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.ipc.ArrowStreamReader;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.write.BatchWrite;
@@ -42,12 +36,8 @@ import org.apache.spark.sql.util.LanceArrowUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -173,60 +163,9 @@ public class AddColumnsBackfillBatchWrite implements BatchWrite {
     }
   }
 
-  private static Dataset openDatasetWithCredentialRefresh(
-      LanceSparkWriteOptions writeOptions,
-      Map<String, String> initialStorageOptions,
-      String namespaceImpl,
-      Map<String, String> namespaceProperties,
-      List<String> tableId) {
-    Map<String, String> merged =
-        LanceRuntime.mergeStorageOptions(writeOptions.getStorageOptions(), initialStorageOptions);
-    StorageOptionsProvider provider =
-        LanceRuntime.getOrCreateStorageOptionsProvider(namespaceImpl, namespaceProperties, tableId);
-
-    ReadOptions.Builder builder = new ReadOptions.Builder().setStorageOptions(merged);
-    if (provider != null) {
-      builder.setStorageOptionsProvider(provider);
-    }
-
-    return Dataset.open()
-        .allocator(LanceRuntime.allocator())
-        .uri(writeOptions.getDatasetUri())
-        .readOptions(builder.build())
-        .build();
-  }
-
-  private static class FragmentBuffer {
-    final VectorSchemaRoot data;
-    final org.lance.spark.arrow.LanceArrowWriter writer;
-
-    FragmentBuffer(VectorSchemaRoot data, org.lance.spark.arrow.LanceArrowWriter writer) {
-      this.data = data;
-      this.writer = writer;
-    }
-  }
-
-  public static class AddColumnsWriter implements DataWriter<InternalRow> {
-    private final LanceSparkWriteOptions writeOptions;
-    private final StructType schema;
-    private final int fragmentIdField;
-    private final List<FragmentMetadata> fragments;
-
-    /**
-     * Initial storage options fetched from namespace.describeTable() on the driver. These are
-     * passed to workers so they can reuse the credentials without calling describeTable again.
-     */
-    private final Map<String, String> initialStorageOptions;
-
-    /** Namespace configuration for credential refresh on workers. */
-    private final String namespaceImpl;
-
-    private final Map<String, String> namespaceProperties;
-    private final List<String> tableId;
-
+  public static class AddColumnsWriter extends AbstractBackfillWriter {
+    private final List<FragmentMetadata> fragments = new ArrayList<>();
     private Schema mergedSchema;
-    private final StructType writerSchema;
-    private final Map<Integer, FragmentBuffer> buffers = new HashMap<>();
 
     public AddColumnsWriter(
         LanceSparkWriteOptions writeOptions,
@@ -236,114 +175,31 @@ public class AddColumnsBackfillBatchWrite implements BatchWrite {
         String namespaceImpl,
         Map<String, String> namespaceProperties,
         List<String> tableId) {
-      this.writeOptions = writeOptions;
-      this.schema = schema;
-      this.fragmentIdField = schema.fieldIndex(LanceDataset.FRAGMENT_ID_COLUMN.name());
-      this.fragments = new ArrayList<>();
-      this.initialStorageOptions = initialStorageOptions;
-      this.namespaceImpl = namespaceImpl;
-      this.namespaceProperties = namespaceProperties;
-      this.tableId = tableId;
-
-      StructType ws = new StructType();
-      for (org.apache.spark.sql.types.StructField f : schema.fields()) {
-        if (newColumns.contains(f.name())
-            || f.name().equals(LanceDataset.ROW_ADDRESS_COLUMN.name())) {
-          ws = ws.add(f);
-        }
-      }
-      this.writerSchema = ws;
+      super(
+          writeOptions,
+          schema,
+          newColumns,
+          initialStorageOptions,
+          namespaceImpl,
+          namespaceProperties,
+          tableId);
     }
 
     @Override
-    public void write(InternalRow record) throws IOException {
-      int fragId = record.getInt(fragmentIdField);
-
-      FragmentBuffer buffer =
-          buffers.computeIfAbsent(
-              fragId,
-              id -> {
-                BufferAllocator allocator = LanceRuntime.allocator();
-                VectorSchemaRoot data =
-                    VectorSchemaRoot.create(
-                        LanceArrowUtils.toArrowSchema(writerSchema, "UTC", false, false),
-                        allocator);
-                org.lance.spark.arrow.LanceArrowWriter writer =
-                    org.lance.spark.arrow.LanceArrowWriter$.MODULE$.create(data, writerSchema);
-                return new FragmentBuffer(data, writer);
-              });
-
-      for (int i = 0; i < writerSchema.fields().length; i++) {
-        buffer.writer.field(i).write(record, schema.fieldIndex(writerSchema.fields()[i].name()));
-      }
-    }
-
-    private void mergeFragment(int fragmentId, FragmentBuffer buffer) {
-      try {
-        buffer.writer.finish();
-
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (ArrowStreamWriter streamWriter = new ArrowStreamWriter(buffer.data, null, out)) {
-          streamWriter.start();
-          streamWriter.writeBatch();
-          streamWriter.end();
-        } catch (IOException e) {
-          throw new RuntimeException("Cannot write schema root", e);
-        }
-
-        byte[] arrowData = out.toByteArray();
-        ByteArrayInputStream in = new ByteArrayInputStream(arrowData);
-        BufferAllocator allocator = LanceRuntime.allocator();
-
-        try (ArrowStreamReader reader = new ArrowStreamReader(in, allocator);
-            ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
-          Data.exportArrayStream(allocator, reader, stream);
-
-          // Use Dataset to get the fragment and merge columns
-          try (Dataset dataset =
-              openDatasetWithCredentialRefresh(
-                  writeOptions,
-                  initialStorageOptions,
-                  namespaceImpl,
-                  namespaceProperties,
-                  tableId)) {
-            Fragment fragment = new Fragment(dataset, fragmentId);
-            FragmentMergeResult result =
-                fragment.mergeColumns(
-                    stream,
-                    LanceDataset.ROW_ADDRESS_COLUMN.name(),
-                    LanceDataset.ROW_ADDRESS_COLUMN.name());
-
-            fragments.add(result.getFragmentMetadata());
-            mergedSchema = result.getSchema().asArrowSchema();
-          }
-        } catch (Exception e) {
-          throw new RuntimeException("Cannot read arrow stream.", e);
-        }
-      } finally {
-        buffer.data.close();
-      }
+    protected void processFragment(Fragment fragment, ArrowArrayStream stream) {
+      FragmentMergeResult result =
+          fragment.mergeColumns(
+              stream,
+              LanceDataset.ROW_ADDRESS_COLUMN.name(),
+              LanceDataset.ROW_ADDRESS_COLUMN.name());
+      fragments.add(result.getFragmentMetadata());
+      mergedSchema = result.getSchema().asArrowSchema();
     }
 
     @Override
-    public WriterCommitMessage commit() {
-      for (Map.Entry<Integer, FragmentBuffer> entry : buffers.entrySet()) {
-        mergeFragment(entry.getKey(), entry.getValue());
-      }
-
+    protected WriterCommitMessage buildCommitMessage() {
       return new TaskCommit(
           fragments, mergedSchema == null ? null : LanceArrowUtils.fromArrowSchema(mergedSchema));
-    }
-
-    @Override
-    public void abort() {}
-
-    @Override
-    public void close() throws IOException {
-      for (FragmentBuffer buffer : buffers.values()) {
-        buffer.data.close();
-      }
-      buffers.clear();
     }
   }
 
