@@ -279,44 +279,50 @@ public class AddColumnsBackfillBatchWrite implements BatchWrite {
     }
 
     private void mergeFragment(int fragmentId, FragmentBuffer buffer) {
-      buffer.writer.finish();
+      try {
+        buffer.writer.finish();
 
-      ByteArrayOutputStream out = new ByteArrayOutputStream();
-      try (ArrowStreamWriter streamWriter = new ArrowStreamWriter(buffer.data, null, out)) {
-        streamWriter.start();
-        streamWriter.writeBatch();
-        streamWriter.end();
-      } catch (IOException e) {
-        throw new RuntimeException("Cannot write schema root", e);
-      }
-
-      byte[] arrowData = out.toByteArray();
-      ByteArrayInputStream in = new ByteArrayInputStream(arrowData);
-      BufferAllocator allocator = LanceRuntime.allocator();
-
-      try (ArrowStreamReader reader = new ArrowStreamReader(in, allocator);
-          ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
-        Data.exportArrayStream(allocator, reader, stream);
-
-        // Use Dataset to get the fragment and merge columns
-        try (Dataset dataset =
-            openDatasetWithCredentialRefresh(
-                writeOptions, initialStorageOptions, namespaceImpl, namespaceProperties, tableId)) {
-          Fragment fragment = new Fragment(dataset, fragmentId);
-          FragmentMergeResult result =
-              fragment.mergeColumns(
-                  stream,
-                  LanceDataset.ROW_ADDRESS_COLUMN.name(),
-                  LanceDataset.ROW_ADDRESS_COLUMN.name());
-
-          fragments.add(result.getFragmentMetadata());
-          mergedSchema = result.getSchema().asArrowSchema();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (ArrowStreamWriter streamWriter = new ArrowStreamWriter(buffer.data, null, out)) {
+          streamWriter.start();
+          streamWriter.writeBatch();
+          streamWriter.end();
+        } catch (IOException e) {
+          throw new RuntimeException("Cannot write schema root", e);
         }
-      } catch (Exception e) {
-        throw new RuntimeException("Cannot read arrow stream.", e);
-      }
 
-      buffer.data.close();
+        byte[] arrowData = out.toByteArray();
+        ByteArrayInputStream in = new ByteArrayInputStream(arrowData);
+        BufferAllocator allocator = LanceRuntime.allocator();
+
+        try (ArrowStreamReader reader = new ArrowStreamReader(in, allocator);
+            ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
+          Data.exportArrayStream(allocator, reader, stream);
+
+          // Use Dataset to get the fragment and merge columns
+          try (Dataset dataset =
+              openDatasetWithCredentialRefresh(
+                  writeOptions,
+                  initialStorageOptions,
+                  namespaceImpl,
+                  namespaceProperties,
+                  tableId)) {
+            Fragment fragment = new Fragment(dataset, fragmentId);
+            FragmentMergeResult result =
+                fragment.mergeColumns(
+                    stream,
+                    LanceDataset.ROW_ADDRESS_COLUMN.name(),
+                    LanceDataset.ROW_ADDRESS_COLUMN.name());
+
+            fragments.add(result.getFragmentMetadata());
+            mergedSchema = result.getSchema().asArrowSchema();
+          }
+        } catch (Exception e) {
+          throw new RuntimeException("Cannot read arrow stream.", e);
+        }
+      } finally {
+        buffer.data.close();
+      }
     }
 
     @Override
@@ -333,7 +339,12 @@ public class AddColumnsBackfillBatchWrite implements BatchWrite {
     public void abort() {}
 
     @Override
-    public void close() throws IOException {}
+    public void close() throws IOException {
+      for (FragmentBuffer buffer : buffers.values()) {
+        buffer.data.close();
+      }
+      buffers.clear();
+    }
   }
 
   public static class AddColumnsWriterFactory implements DataWriterFactory {
