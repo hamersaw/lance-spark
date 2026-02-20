@@ -137,7 +137,7 @@ jobs:
       - name: Build bundle
         run: make bundle SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}
       - name: Build Docker base image
-        run: make docker-build-test-base SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }} DOCKER_CACHE_FROM="type=gha" DOCKER_CACHE_TO="type=gha,mode=max"
+        run: make docker-build-test-base SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }} DOCKER_CACHE_FROM="type=gha,scope=test-base-${{ matrix.spark-version }}-${{ matrix.scala-version }}" DOCKER_CACHE_TO="type=gha,scope=test-base-${{ matrix.spark-version }}-${{ matrix.scala-version }},mode=max"
       - name: Build Docker test image
         run: make docker-build-test SPARK_VERSION=${{ matrix.spark-version }} SCALA_VERSION=${{ matrix.scala-version }}
       - name: Run Docker integration tests
