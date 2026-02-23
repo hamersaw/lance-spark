@@ -185,7 +185,7 @@ public abstract class AbstractBackfillWriter implements DataWriter<InternalRow> 
     StorageOptionsProvider provider =
         LanceRuntime.getOrCreateStorageOptionsProvider(namespaceImpl, namespaceProperties, tableId);
 
-    ReadOptions.Builder builder = new ReadOptions.Builder().setStorageOptions(merged);
+    ReadOptions.Builder builder = new ReadOptions.Builder().setStorageOptions(merged).setSession(LanceRuntime.session());
     if (provider != null) {
       builder.setStorageOptionsProvider(provider);
     }
