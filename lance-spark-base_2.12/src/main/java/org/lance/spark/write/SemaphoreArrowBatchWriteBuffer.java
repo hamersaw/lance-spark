@@ -50,7 +50,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
   private boolean finished = false;
 
   @GuardedBy("lock")
-  private int count = 0;
+  private int count;
 
   private org.lance.spark.arrow.LanceArrowWriter arrowWriter = null;
 
@@ -62,6 +62,9 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     this.schema = schema;
     this.sparkSchema = sparkSchema;
     this.batchSize = batchSize;
+    // Start with count = batchSize so the writer blocks on canWrite.await() until the
+    // reader's prepareLoadNextBatch() initializes arrowWriter and resets count to 0.
+    this.count = batchSize;
   }
 
   /** Simplified constructor that uses LanceRuntime allocator and converts Spark schema to Arrow. */
