@@ -84,6 +84,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     lock.lock();
     try {
       canWrite.signalAll();
+      batchReady.signalAll();
     } finally {
       lock.unlock();
     }
@@ -94,10 +95,12 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     Preconditions.checkNotNull(row);
     lock.lock();
     try {
+      checkForError();
+
       // wait until prepareLoadNextBatch signals that writes are available
       while (remainingWrites == 0) {
-        checkForError();
         canWrite.await();
+        checkForError();
       }
 
       arrowWriter.write(row);
@@ -157,6 +160,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
       // wait until batch is full or finished
       while (!batchFull && !finished) {
         batchReady.await();
+        checkForError();
       }
 
       arrowWriter.finish();
