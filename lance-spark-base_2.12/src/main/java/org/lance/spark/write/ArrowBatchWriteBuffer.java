@@ -27,7 +27,7 @@ import java.util.concurrent.FutureTask;
  * Abstract base class for Arrow batch write buffers that bridge Spark row writing and Lance
  * fragment creation.
  *
- * <p>Both {@link SemaphoreArrowBatchWriteBuffer} (semaphore-based) and {@link
+ * <p>Both {@link SemaphoreArrowBatchWriteBuffer} (lock-based) and {@link
  * QueuedArrowBatchWriteBuffer} (queue-based) extend this class, allowing the write path to be
  * configured at runtime.
  */
@@ -51,8 +51,8 @@ public abstract class ArrowBatchWriteBuffer extends ArrowReader {
 
   /**
    * Creates a {@link FutureTask} that is tracked by this buffer for error propagation. The returned
-   * task's {@link FutureTask#done()} callback calls {@link #onTaskComplete()} so that blocked
-   * writers are woken immediately on task completion or failure.
+   * task's {@link FutureTask#done()} callback calls {@link #onTaskComplete()} so that subclasses
+   * can wake blocked writers on task completion or failure.
    */
   public <V> FutureTask<V> createTrackedTask(Callable<V> callable) {
     Preconditions.checkState(
@@ -73,7 +73,7 @@ public abstract class ArrowBatchWriteBuffer extends ArrowReader {
    * writer threads.
    */
   protected void onTaskComplete() {
-    // No-op by default; overridden by SemaphoreArrowBatchWriteBuffer to signal conditions
+    // No-op by default; subclasses override to signal blocked threads
   }
 
   /**

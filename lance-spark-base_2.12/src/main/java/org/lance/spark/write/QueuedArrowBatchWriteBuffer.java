@@ -161,8 +161,13 @@ public class QueuedArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
         currentBatch.setRowCount(count);
 
         // Put in queue, periodically checking for consumer errors
-        while (!batchQueue.offer(currentBatch, 100, TimeUnit.MILLISECONDS)) {
-          checkForError();
+        try {
+          while (!batchQueue.offer(currentBatch, 100, TimeUnit.MILLISECONDS)) {
+            checkForError();
+          }
+        } catch (RuntimeException e) {
+          currentBatch.close();
+          throw e;
         }
 
         // Allocate new batch for next writes
