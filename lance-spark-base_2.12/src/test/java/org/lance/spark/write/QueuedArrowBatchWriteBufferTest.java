@@ -34,6 +34,7 @@ import java.util.Collections;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -528,13 +529,14 @@ public class QueuedArrowBatchWriteBufferTest {
 
       AtomicInteger rowsWritten = new AtomicInteger(0);
       AtomicInteger rowsRead = new AtomicInteger(0);
-      AtomicInteger maxQueueSize = new AtomicInteger(0);
+      CountDownLatch readerConsumedBatch = new CountDownLatch(1);
 
       Callable<Integer> read =
           () -> {
             if (writeBuffer.loadNextBatch()) {
               VectorSchemaRoot root = writeBuffer.getVectorSchemaRoot();
               rowsRead.addAndGet(root.getRowCount());
+              readerConsumedBatch.countDown();
 
               // Throw a mock exception after reading a batch
               throw new RuntimeException("Mock exception");
@@ -543,14 +545,7 @@ public class QueuedArrowBatchWriteBufferTest {
           };
 
       // Start background thread to read from the queue
-      FutureTask<Integer> readTask =
-          new FutureTask<>(read) {
-            @Override
-            protected void done() {
-              writeBuffer.onTaskComplete();
-            }
-          };
-      writeBuffer.setFragmentCreationTask(readTask);
+      FutureTask<Integer> readTask = writeBuffer.createTrackedTask(read);
       Thread readerThread = new Thread(readTask);
       readerThread.start();
 
@@ -562,14 +557,11 @@ public class QueuedArrowBatchWriteBufferTest {
               for (int i = 0; i < totalRows; i++) {
                 InternalRow row = new GenericInternalRow(new Object[] {i + 1});
                 writeBuffer.write(row);
-                // Track max queue size
-                int currentSize = writeBuffer.getCurrentQueueSize();
-                maxQueueSize.updateAndGet(prev -> Math.max(prev, currentSize));
                 rowsWritten.incrementAndGet();
 
                 if (rowsWritten.get() >= batchSize) {
-                  // Wait some time to allow the reader to read a batch and throw an exception
-                  Thread.sleep(2000);
+                  // Wait for the reader to consume a batch and throw
+                  readerConsumedBatch.await();
                 }
               }
             } finally {
@@ -581,8 +573,6 @@ public class QueuedArrowBatchWriteBufferTest {
 
       assertEquals(batchSize, rowsWritten.get());
       assertEquals(batchSize, rowsRead.get());
-      // Queue should have been used (max size > 0 at some point)
-      assertTrue(maxQueueSize.get() >= 0);
       writeBuffer.close();
     }
   }

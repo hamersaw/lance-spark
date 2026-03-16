@@ -13,12 +13,17 @@
  */
 package org.lance.spark.write;
 
+import com.google.common.base.Preconditions;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.spark.sql.catalyst.InternalRow;
 
+import java.util.concurrent.Callable;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.FutureTask;
 
 /**
  * Abstract base class for Arrow batch write buffers that bridge Spark row writing and Lance
@@ -47,20 +52,30 @@ public abstract class ArrowBatchWriteBuffer extends ArrowReader {
   public abstract void setFinished();
 
   /**
-   * Sets the fragment creation task so the buffer can check for errors. Callers should override
-   * {@link java.util.concurrent.FutureTask#done()} to call {@link #onTaskComplete()} so that
-   * blocked writers are woken immediately on task failure.
+   * Creates a {@link FutureTask} that is tracked by this buffer for error propagation. The returned
+   * task's {@link FutureTask#done()} callback calls {@link #onTaskComplete()} so that blocked
+   * writers are woken immediately on task completion or failure.
    */
-  public void setFragmentCreationTask(Future<?> task) {
+  public <V> FutureTask<V> createTrackedTask(Callable<V> callable) {
+    Preconditions.checkState(
+        this.fragmentCreationTask == null, "Fragment creation task already set");
+    FutureTask<V> task =
+        new FutureTask<>(callable) {
+          @Override
+          protected void done() {
+            onTaskComplete();
+          }
+        };
     this.fragmentCreationTask = task;
+    return task;
   }
 
   /**
    * Called when the fragment creation task completes. Subclasses override this to wake blocked
    * writer threads.
    */
-  public void onTaskComplete() {
-    // No-op by default; overridden by SemaphoreArrowBatchWriteBuffer to signal canWrite
+  protected void onTaskComplete() {
+    // No-op by default; overridden by SemaphoreArrowBatchWriteBuffer to signal conditions
   }
 
   /**

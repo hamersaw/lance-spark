@@ -86,14 +86,7 @@ public class SemaphoreArrowBatchWriteBufferTest {
           return null;
         };
 
-    FutureTask<Void> readerTask =
-        new FutureTask<>(readerCallable) {
-          @Override
-          protected void done() {
-            writeBuffer.onTaskComplete();
-          }
-        };
-    writeBuffer.setFragmentCreationTask(readerTask);
+    FutureTask<Void> readerTask = writeBuffer.createTrackedTask(readerCallable);
 
     Thread readerThread = new Thread(readerTask);
     writerThread.start();
@@ -145,14 +138,7 @@ public class SemaphoreArrowBatchWriteBufferTest {
             return null;
           };
 
-      FutureTask<Void> readerTask =
-          new FutureTask<>(readerCallable) {
-            @Override
-            protected void done() {
-              writeBuffer.onTaskComplete();
-            }
-          };
-      writeBuffer.setFragmentCreationTask(readerTask);
+      FutureTask<Void> readerTask = writeBuffer.createTrackedTask(readerCallable);
 
       Thread readerThread = new Thread(readerTask);
       writerThread.start();
@@ -245,14 +231,7 @@ public class SemaphoreArrowBatchWriteBufferTest {
           };
 
       // Start background thread to read data
-      FutureTask<Integer> readTask =
-          new FutureTask<>(read) {
-            @Override
-            protected void done() {
-              writeBuffer.onTaskComplete();
-            }
-          };
-      writeBuffer.setFragmentCreationTask(readTask);
+      FutureTask<Integer> readTask = writeBuffer.createTrackedTask(read);
       Thread readerThread = new Thread(readTask);
       readerThread.start();
 

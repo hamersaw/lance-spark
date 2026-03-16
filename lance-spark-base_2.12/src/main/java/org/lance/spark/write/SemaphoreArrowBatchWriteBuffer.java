@@ -47,16 +47,10 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
   private final Condition batchReady = lock.newCondition();
 
   @GuardedBy("lock")
-  private volatile boolean finished = false;
-
-  @GuardedBy("lock")
-  private int remainingWrites = 0;
+  private boolean finished = false;
 
   @GuardedBy("lock")
   private int count = 0;
-
-  @GuardedBy("lock")
-  private boolean batchFull = false;
 
   private org.lance.spark.arrow.LanceArrowWriter arrowWriter = null;
 
@@ -98,17 +92,15 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
       checkForError();
 
       // wait until prepareLoadNextBatch signals that writes are available
-      while (remainingWrites == 0) {
+      while (count >= batchSize) {
         canWrite.await();
         checkForError();
       }
 
       arrowWriter.write(row);
       count++;
-      remainingWrites--;
 
       if (count == batchSize) {
-        batchFull = true;
         batchReady.signal();
       }
     } catch (InterruptedException e) {
@@ -140,8 +132,6 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     lock.lock();
     try {
       count = 0;
-      batchFull = false;
-      remainingWrites = batchSize;
       canWrite.signalAll();
     } finally {
       lock.unlock();
@@ -158,7 +148,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
       }
 
       // wait until batch is full or finished
-      while (!batchFull && !finished) {
+      while (count < batchSize && !finished) {
         batchReady.await();
         checkForError();
       }

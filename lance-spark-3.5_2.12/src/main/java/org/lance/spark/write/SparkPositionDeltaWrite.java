@@ -247,13 +247,7 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
             }
           };
       FutureTask<List<FragmentMetadata>> fragmentCreationTask =
-          new FutureTask<>(fragmentCreator) {
-            @Override
-            protected void done() {
-              writeBuffer.onTaskComplete();
-            }
-          };
-      writeBuffer.setFragmentCreationTask(fragmentCreationTask);
+          writeBuffer.createTrackedTask(fragmentCreator);
       Thread fragmentCreationThread = new Thread(fragmentCreationTask);
       fragmentCreationThread.start();
 
