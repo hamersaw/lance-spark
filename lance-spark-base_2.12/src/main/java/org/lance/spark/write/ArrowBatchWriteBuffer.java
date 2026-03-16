@@ -19,10 +19,8 @@ import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.spark.sql.catalyst.InternalRow;
 
 import java.util.concurrent.Callable;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.FutureTask;
 
 /**
