@@ -562,6 +562,10 @@ public class QueuedArrowBatchWriteBufferTest {
                 if (rowsWritten.get() >= batchSize) {
                   // Wait for the reader to consume a batch and throw
                   readerConsumedBatch.await();
+                  // Wait for the reader task to fully complete so checkForError detects it
+                  while (!readTask.isDone()) {
+                    Thread.sleep(1);
+                  }
                 }
               }
             } finally {
