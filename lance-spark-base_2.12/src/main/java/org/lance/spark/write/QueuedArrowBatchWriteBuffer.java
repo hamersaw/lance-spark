@@ -195,8 +195,13 @@ public class QueuedArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
       if (remainingRows > 0) {
         currentArrowWriter.finish();
         currentBatch.setRowCount(remainingRows);
-        while (!batchQueue.offer(currentBatch, 100, TimeUnit.MILLISECONDS)) {
-          checkForError();
+        try {
+          while (!batchQueue.offer(currentBatch, 100, TimeUnit.MILLISECONDS)) {
+            checkForError();
+          }
+        } catch (RuntimeException e) {
+          currentBatch.close();
+          throw e;
         }
       } else {
         // No remaining rows, close the empty batch
