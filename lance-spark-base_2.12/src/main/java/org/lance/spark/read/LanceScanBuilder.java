@@ -16,7 +16,10 @@ package org.lance.spark.read;
 import org.lance.Dataset;
 import org.lance.Fragment;
 import org.lance.ManifestSummary;
+import org.lance.index.IndexDescription;
+import org.lance.index.scalar.ZoneStats;
 import org.lance.ipc.ColumnOrdering;
+import org.lance.schema.LanceField;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.utils.Optional;
@@ -42,9 +45,16 @@ import org.apache.spark.sql.types.ArrayType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class LanceScanBuilder
@@ -54,6 +64,8 @@ public class LanceScanBuilder
         SupportsPushDownOffset,
         SupportsPushDownTopN,
         SupportsPushDownAggregates {
+  private static final Logger LOG = LoggerFactory.getLogger(LanceScanBuilder.class);
+
   private final LanceSparkReadOptions readOptions;
   private StructType schema;
 
@@ -137,6 +149,12 @@ public class LanceScanBuilder
     ManifestSummary summary = getOrOpenDataset().getVersion().getManifestSummary();
     LanceStatistics statistics = new LanceStatistics(summary);
 
+    // Load zonemap stats for columns that appear in pushed filters.
+    // This is done on the driver only — zonemap files are small
+    // metadata.
+    Map<String, List<ZoneStats>> zonemapStats =
+        loadZonemapStatsForFilteredColumns(getOrOpenDataset(), pushedFilters);
+
     // Close the lazily opened dataset - it's no longer needed after build
     closeLazyDataset();
 
@@ -151,6 +169,7 @@ public class LanceScanBuilder
         pushedAggregation,
         pushedFilters,
         statistics,
+        zonemapStats,
         initialStorageOptions,
         namespaceImpl,
         namespaceProperties);
@@ -274,5 +293,81 @@ public class LanceScanBuilder
     } catch (Exception e) {
       return Optional.empty();
     }
+  }
+
+  /**
+   * Loads zonemap statistics for columns that appear in pushed filters. Only loads stats for
+   * columns that have a zonemap index.
+   */
+  private Map<String, List<ZoneStats>> loadZonemapStatsForFilteredColumns(
+      Dataset dataset, Filter[] filters) {
+    if (filters == null || filters.length == 0) {
+      return Collections.emptyMap();
+    }
+
+    Set<String> filteredColumns = extractReferencedColumns(filters);
+    if (filteredColumns.isEmpty()) {
+      return Collections.emptyMap();
+    }
+
+    Set<String> zonemapColumns = findZonemapIndexedColumns(dataset);
+    if (zonemapColumns.isEmpty()) {
+      return Collections.emptyMap();
+    }
+
+    Map<String, List<ZoneStats>> result = new HashMap<>();
+    for (String col : filteredColumns) {
+      if (zonemapColumns.contains(col)) {
+        try {
+          List<ZoneStats> stats = dataset.getZonemapStats(col);
+          if (!stats.isEmpty()) {
+            result.put(col, stats);
+            LOG.debug("Loaded {} zonemap zones for column '{}'", stats.size(), col);
+          }
+        } catch (Exception e) {
+          LOG.warn("Failed to load zonemap stats for column '{}': {}", col, e.getMessage());
+        }
+      }
+    }
+
+    if (!result.isEmpty()) {
+      LOG.info("Loaded zonemap stats for {} columns: {}", result.size(), result.keySet());
+    }
+
+    return result;
+  }
+
+  private Set<String> findZonemapIndexedColumns(Dataset dataset) {
+    Set<String> columns = new HashSet<>();
+    try {
+      Map<Integer, String> fieldIdToName = new HashMap<>();
+      for (LanceField field : dataset.getLanceSchema().fields()) {
+        fieldIdToName.put(field.getId(), field.getName());
+      }
+
+      for (IndexDescription idx : dataset.describeIndices()) {
+        if ("ZONEMAP".equalsIgnoreCase(idx.getIndexType())) {
+          for (int fieldId : idx.getFieldIds()) {
+            String name = fieldIdToName.get(fieldId);
+            if (name != null) {
+              columns.add(name);
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      LOG.warn("Failed to query zonemap indexes: {}", e.getMessage());
+    }
+    return columns;
+  }
+
+  private static Set<String> extractReferencedColumns(Filter[] filters) {
+    Set<String> columns = new HashSet<>();
+    for (Filter filter : filters) {
+      for (String attr : filter.references()) {
+        columns.add(attr);
+      }
+    }
+    return columns;
   }
 }

@@ -13,14 +13,19 @@
  */
 package org.lance.spark.read;
 
+import org.lance.spark.LanceConstant;
 import org.lance.spark.TestUtils;
 
 import org.apache.spark.sql.connector.expressions.Expression;
+import org.apache.spark.sql.connector.expressions.FieldReference;
 import org.apache.spark.sql.connector.expressions.aggregate.AggregateFunc;
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation;
 import org.apache.spark.sql.connector.expressions.aggregate.CountStar;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.Scan;
+import org.apache.spark.sql.connector.read.partitioning.KeyGroupedPartitioning;
+import org.apache.spark.sql.connector.read.partitioning.Partitioning;
+import org.apache.spark.sql.connector.read.partitioning.UnknownPartitioning;
 import org.apache.spark.sql.sources.Filter;
 import org.apache.spark.sql.sources.GreaterThan;
 import org.apache.spark.sql.types.DataTypes;
@@ -133,5 +138,34 @@ public class LanceScanTest {
     assertTrue(
         partitions.length <= allPartitions.length,
         "Limit-pruned partitions should not exceed total partitions");
+  }
+
+  // --- outputPartitioning ---
+
+  @Test
+  public void testOutputPartitioningBeforePlanIsUnknown() {
+    LanceScan scan = buildScan();
+    Partitioning partitioning = scan.outputPartitioning();
+    assertInstanceOf(UnknownPartitioning.class, partitioning);
+  }
+
+  @Test
+  public void testOutputPartitioningAfterPlanIsKeyGrouped() {
+    LanceScan scan = buildScan();
+    InputPartition[] partitions = scan.planInputPartitions();
+    assertTrue(partitions.length > 0);
+
+    Partitioning partitioning = scan.outputPartitioning();
+    assertInstanceOf(KeyGroupedPartitioning.class, partitioning);
+
+    KeyGroupedPartitioning kgp = (KeyGroupedPartitioning) partitioning;
+    assertEquals(partitions.length, kgp.numPartitions());
+
+    Expression[] keys = kgp.keys();
+    assertEquals(1, keys.length);
+    assertInstanceOf(FieldReference.class, keys[0]);
+    String[] fieldNames = ((FieldReference) keys[0]).fieldNames();
+    assertEquals(1, fieldNames.length);
+    assertEquals(LanceConstant.FRAGMENT_ID, fieldNames[0]);
   }
 }

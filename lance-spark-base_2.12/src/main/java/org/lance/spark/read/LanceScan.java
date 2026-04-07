@@ -13,12 +13,16 @@
  */
 package org.lance.spark.read;
 
+import org.lance.index.scalar.ZoneStats;
 import org.lance.ipc.ColumnOrdering;
+import org.lance.spark.LanceConstant;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.utils.Optional;
 
 import org.apache.arrow.util.Preconditions;
 import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.connector.expressions.Expression;
+import org.apache.spark.sql.connector.expressions.FieldReference;
 import org.apache.spark.sql.connector.expressions.aggregate.AggregateFunc;
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation;
 import org.apache.spark.sql.connector.expressions.aggregate.CountStar;
@@ -28,7 +32,11 @@ import org.apache.spark.sql.connector.read.PartitionReader;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.connector.read.Statistics;
+import org.apache.spark.sql.connector.read.SupportsReportPartitioning;
 import org.apache.spark.sql.connector.read.SupportsReportStatistics;
+import org.apache.spark.sql.connector.read.partitioning.KeyGroupedPartitioning;
+import org.apache.spark.sql.connector.read.partitioning.Partitioning;
+import org.apache.spark.sql.connector.read.partitioning.UnknownPartitioning;
 import org.apache.spark.sql.internal.connector.SupportsMetadata;
 import org.apache.spark.sql.sources.Filter;
 import org.apache.spark.sql.types.StructType;
@@ -39,6 +47,7 @@ import scala.collection.immutable.Map;
 
 import java.io.Serializable;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -46,7 +55,12 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 public class LanceScan
-    implements Batch, Scan, SupportsMetadata, SupportsReportStatistics, Serializable {
+    implements Batch,
+        Scan,
+        SupportsMetadata,
+        SupportsReportStatistics,
+        SupportsReportPartitioning,
+        Serializable {
   private static final long serialVersionUID = 947284762748623947L;
   private static final Logger LOG = LoggerFactory.getLogger(LanceScan.class);
 
@@ -60,6 +74,15 @@ public class LanceScan
   private final Filter[] pushedFilters;
   private final LanceStatistics statistics;
   private final String scanId = UUID.randomUUID().toString();
+
+  /**
+   * Per-column zonemap statistics loaded on the driver during scan building. Used for
+   * fragment-level pruning in {@link #planInputPartitions()}.
+   */
+  private final java.util.Map<String, List<ZoneStats>> zonemapStats;
+
+  /** Number of partitions after pruning, set during {@link #planInputPartitions()}. */
+  private transient int numPartitions = -1;
 
   /**
    * Initial storage options fetched from namespace.describeTable() on the driver. These are passed
@@ -82,6 +105,7 @@ public class LanceScan
       Optional<Aggregation> pushedAggregation,
       Filter[] pushedFilters,
       LanceStatistics statistics,
+      java.util.Map<String, List<ZoneStats>> zonemapStats,
       java.util.Map<String, String> initialStorageOptions,
       String namespaceImpl,
       java.util.Map<String, String> namespaceProperties) {
@@ -95,6 +119,7 @@ public class LanceScan
     this.pushedFilters =
         pushedFilters != null ? Arrays.copyOf(pushedFilters, pushedFilters.length) : new Filter[0];
     this.statistics = statistics;
+    this.zonemapStats = zonemapStats != null ? zonemapStats : Collections.emptyMap();
     this.initialStorageOptions = initialStorageOptions;
     this.namespaceImpl = namespaceImpl;
     this.namespaceProperties = namespaceProperties;
@@ -109,6 +134,11 @@ public class LanceScan
   public InputPartition[] planInputPartitions() {
     LanceSplit.ScanPlanResult planResult = LanceSplit.planScan(readOptions);
     List<LanceSplit> prunedSplits = pruneByRowAddrFilters(planResult.getSplits());
+
+    // Zonemap-based fragment pruning: uses per-column min/max/null_count
+    // statistics to eliminate fragments that provably cannot match
+    // pushed filters.
+    prunedSplits = pruneByZonemapStats(prunedSplits);
 
     // Limit-based split pruning: when a LIMIT is pushed down without filters or TopN sort,
     // use per-fragment row counts to plan only enough splits to satisfy the limit.
@@ -143,6 +173,7 @@ public class LanceScan
                         namespaceProperties))
             .toArray(InputPartition[]::new);
 
+    this.numPartitions = result.length;
     return result;
   }
 
@@ -258,6 +289,63 @@ public class LanceScan
     }
 
     return pruned;
+  }
+
+  /**
+   * Prunes splits based on zonemap index statistics — using per-column min/max/null_count to
+   * eliminate fragments that provably cannot match the pushed filters.
+   *
+   * <p>This is analogous to partition pruning in Hive/Iceberg: fragments whose zones all fail the
+   * predicate are skipped entirely, avoiding fragment opens, scan setup, and task scheduling.
+   */
+  private List<LanceSplit> pruneByZonemapStats(List<LanceSplit> allSplits) {
+    if (zonemapStats.isEmpty()) {
+      return allSplits;
+    }
+
+    java.util.Optional<Set<Integer>> targetFragmentIds =
+        ZonemapFragmentPruner.pruneFragments(pushedFilters, zonemapStats);
+    if (!targetFragmentIds.isPresent()) {
+      return allSplits;
+    }
+
+    Set<Integer> allowedIds = targetFragmentIds.get();
+    List<LanceSplit> pruned =
+        allSplits.stream()
+            .filter(split -> split.getFragments().stream().anyMatch(allowedIds::contains))
+            .collect(Collectors.toList());
+
+    if (pruned.size() < allSplits.size()) {
+      LOG.info(
+          "Zonemap pruning: {} of {} splits retained," + " allowed fragment IDs: {}",
+          pruned.size(),
+          allSplits.size(),
+          allowedIds);
+    }
+
+    return pruned;
+  }
+
+  /**
+   * Reports the output partitioning to Spark's optimizer.
+   *
+   * <p>Since each {@link LanceSplit} maps to exactly one fragment and data within a fragment is
+   * physically grouped, we tell Spark that the output is partitioned by the fragment ID column
+   * ({@code _fragid}). This enables Spark to:
+   *
+   * <ul>
+   *   <li>Skip unnecessary shuffles when the downstream operation is partition-aware
+   *   <li>Perform storage-partitioned joins (Spark 3.4+)
+   *   <li>Align partition boundaries with fragment-aware operations
+   * </ul>
+   */
+  @Override
+  public Partitioning outputPartitioning() {
+    if (numPartitions < 0) {
+      return new UnknownPartitioning(0);
+    }
+    Expression[] keys = new Expression[] {FieldReference.apply(LanceConstant.FRAGMENT_ID)};
+    return new KeyGroupedPartitioning(keys, numPartitions);
   }
 
   @Override
