@@ -30,7 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 public class LanceColumnarPartitionReaderTest {
   @Test
   public void test() throws Exception {
-    LanceSplit split = new LanceSplit(Arrays.asList(0, 1));
+    LanceSplit split =
+        new LanceSplit(Arrays.asList(FragmentRowRange.allRows(0), FragmentRowRange.allRows(1)));
     LanceInputPartition partition =
         new LanceInputPartition(
             TestUtils.TestTable1Config.schema,
@@ -72,7 +73,7 @@ public class LanceColumnarPartitionReaderTest {
 
   @Test
   public void testOffsetAndLimit() throws Exception {
-    LanceSplit split = new LanceSplit(Collections.singletonList(0));
+    LanceSplit split = new LanceSplit(Collections.singletonList(FragmentRowRange.allRows(0)));
     LanceInputPartition partition =
         new LanceInputPartition(
             TestUtils.TestTable1Config.schema,
@@ -112,7 +113,7 @@ public class LanceColumnarPartitionReaderTest {
 
   @Test
   public void testTopN() throws Exception {
-    LanceSplit split = new LanceSplit(Collections.singletonList(1));
+    LanceSplit split = new LanceSplit(Collections.singletonList(FragmentRowRange.allRows(1)));
     ColumnOrdering.Builder builder = new ColumnOrdering.Builder();
     builder.setNullFirst(true);
     builder.setAscending(false);

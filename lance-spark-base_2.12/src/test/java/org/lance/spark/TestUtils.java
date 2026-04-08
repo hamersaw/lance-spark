@@ -13,6 +13,7 @@
  */
 package org.lance.spark;
 
+import org.lance.spark.read.FragmentRowRange;
 import org.lance.spark.read.LanceInputPartition;
 import org.lance.spark.read.LanceSplit;
 import org.lance.spark.utils.Optional;
@@ -80,7 +81,8 @@ public class TestUtils {
           new LanceInputPartition(
               schema,
               0 /* partitionId */,
-              new LanceSplit(Arrays.asList(0, 1)),
+              new LanceSplit(
+                  Arrays.asList(FragmentRowRange.allRows(0), FragmentRowRange.allRows(1))),
               readOptions,
               Optional.empty() /* whereCondition */,
               Optional.empty() /* limit */,

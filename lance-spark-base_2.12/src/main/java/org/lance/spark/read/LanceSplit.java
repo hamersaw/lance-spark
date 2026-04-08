@@ -24,18 +24,27 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class LanceSplit implements Serializable {
-  private static final long serialVersionUID = 2983749283749283749L;
+  private static final long serialVersionUID = 2983749283749283750L;
 
-  private final List<Integer> fragments;
+  private final List<FragmentRowRange> ranges;
 
-  public LanceSplit(List<Integer> fragments) {
-    this.fragments = fragments;
+  public LanceSplit(List<FragmentRowRange> ranges) {
+    this.ranges = ranges;
   }
 
+  public List<FragmentRowRange> getRanges() {
+    return ranges;
+  }
+
+  /**
+   * @deprecated Use {@link #getRanges()} instead. This shim extracts fragment IDs from ranges.
+   */
+  @Deprecated
   public List<Integer> getFragments() {
-    return fragments;
+    return ranges.stream().map(FragmentRowRange::getFragmentId).collect(Collectors.toList());
   }
 
   /** Result of scan planning containing splits, resolved version, and per-fragment row counts. */
@@ -80,7 +89,7 @@ public class LanceSplit implements Serializable {
       Map<Integer, Long> fragmentRowCounts = new HashMap<>(fragments.size());
       for (Fragment fragment : fragments) {
         int id = fragment.getId();
-        splits.add(new LanceSplit(Collections.singletonList(id)));
+        splits.add(new LanceSplit(Collections.singletonList(FragmentRowRange.allRows(id))));
         fragmentRowCounts.put(id, fragment.metadata().getNumRows());
       }
       long resolvedVersion = dataset.getVersion().getId();

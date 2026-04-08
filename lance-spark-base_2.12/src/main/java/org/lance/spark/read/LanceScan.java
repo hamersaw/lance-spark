@@ -150,8 +150,8 @@ public class LanceScan
    * Prunes splits based on {@code _rowaddr} filters — skipping fragment opens, scan setup, and task
    * scheduling for fragments that provably cannot match the query predicate.
    *
-   * <p>CONTRACT: {@link LanceSplit#getFragments()} returns Lance fragment IDs as Integer values
-   * that match {@code (int)(rowAddr >>> 32)} — the same encoding used by {@link
+   * <p>CONTRACT: {@link LanceSplit#getRanges()} contains {@link FragmentRowRange} entries whose
+   * fragment IDs match {@code (int)(rowAddr >>> 32)} — the same encoding used by {@link
    * org.lance.spark.join.FragmentAwareJoinUtils}. This is verified by {@link
    * LanceSplit#planScan(LanceSparkReadOptions)} which maps {@code Fragment.getId()} directly.
    *
@@ -166,19 +166,13 @@ public class LanceScan
       return allSplits;
     }
     Set<Integer> allowedIds = targetFragmentIds.get();
-    // Assumes each LanceSplit maps to a single fragment. If splits ever
-    // bundle multiple fragments, consider sub-split level pruning.
     List<LanceSplit> pruned =
         allSplits.stream()
             .filter(
-                split -> {
-                  if (split.getFragments().size() > 1) {
-                    LOG.warn(
-                        "Split contains {} fragments;" + " sub-split pruning not implemented",
-                        split.getFragments().size());
-                  }
-                  return split.getFragments().stream().anyMatch(allowedIds::contains);
-                })
+                split ->
+                    split.getRanges().stream()
+                        .map(FragmentRowRange::getFragmentId)
+                        .anyMatch(allowedIds::contains))
             .collect(Collectors.toList());
     if (pruned.size() < allSplits.size()) {
       LOG.debug(

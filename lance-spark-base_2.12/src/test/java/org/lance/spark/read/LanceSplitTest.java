@@ -31,10 +31,11 @@ public class LanceSplitTest {
   }
 
   @Test
-  public void testPlanScanEachSplitHasSingleFragment() {
+  public void testPlanScanEachSplitHasSingleFullFragmentRange() {
     LanceSplit.ScanPlanResult result = LanceSplit.planScan(TestUtils.TestTable1Config.readOptions);
     for (LanceSplit split : result.getSplits()) {
-      assertEquals(1, split.getFragments().size());
+      assertEquals(1, split.getRanges().size());
+      assertTrue(split.getRanges().get(0).isFullFragment());
     }
   }
 
