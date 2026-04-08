@@ -129,12 +129,12 @@ public class LanceScan
       resolvedReadOptions = readOptions.withVersion((int) dataset.getVersion().getId());
     }
 
+    int maxRows = resolvedReadOptions.getMaxRowsPerPartition();
+    ranges = splitRanges(ranges, fragmentRowCounts, maxRows);
     ranges = pruneByRowAddrFilters(ranges);
     ranges = pruneByLimit(ranges, fragmentRowCounts);
 
-    // Pack ranges into partitions (one range per partition for now)
-    List<List<FragmentRowRange>> partitions =
-        ranges.stream().map(Collections::singletonList).collect(Collectors.toList());
+    List<List<FragmentRowRange>> partitions = binPackRanges(ranges, fragmentRowCounts, maxRows);
 
     return IntStream.range(0, partitions.size())
         .mapToObj(
@@ -211,10 +211,7 @@ public class LanceScan
 
     for (FragmentRowRange range : allRanges) {
       pruned.add(range);
-      Long rowCount = fragmentRowCounts.get(range.getFragmentId());
-      if (rowCount != null) {
-        rowsAccumulated += rowCount;
-      }
+      rowsAccumulated += getRowCount(range, fragmentRowCounts);
       if (rowsAccumulated >= requestedLimit) {
         break;
       }
@@ -231,6 +228,85 @@ public class LanceScan
     }
 
     return pruned;
+  }
+
+  /**
+   * Splits ranges whose row count exceeds {@code maxRows} into sub-ranges. Also materializes {@link
+   * FragmentRowRange#ALL_ROWS} sentinels into concrete counts so bin-packing can size them.
+   */
+  private List<FragmentRowRange> splitRanges(
+      List<FragmentRowRange> ranges, java.util.Map<Integer, Long> fragmentRowCounts, int maxRows) {
+    if (maxRows <= 0) {
+      return ranges;
+    }
+    List<FragmentRowRange> result = new ArrayList<>();
+    for (FragmentRowRange range : ranges) {
+      long total = getRowCount(range, fragmentRowCounts);
+      if (total <= maxRows || total <= 0) {
+        if (range.isFullFragment() && total > 0) {
+          result.add(new FragmentRowRange(range.getFragmentId(), 0, total));
+        } else {
+          result.add(range);
+        }
+      } else {
+        long offset = range.getOffset();
+        long remaining = total;
+        while (remaining > 0) {
+          long chunk = Math.min(remaining, maxRows);
+          result.add(new FragmentRowRange(range.getFragmentId(), offset, chunk));
+          offset += chunk;
+          remaining -= chunk;
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Packs ranges into partitions using first-fit decreasing bin packing. When {@code maxRows} is
+   * disabled (≤ 0), falls back to one range per partition.
+   */
+  private List<List<FragmentRowRange>> binPackRanges(
+      List<FragmentRowRange> ranges, java.util.Map<Integer, Long> fragmentRowCounts, int maxRows) {
+    if (maxRows <= 0) {
+      return ranges.stream().map(Collections::singletonList).collect(Collectors.toList());
+    }
+
+    List<FragmentRowRange> sorted = new ArrayList<>(ranges);
+    sorted.sort(
+        (a, b) ->
+            Long.compare(getRowCount(b, fragmentRowCounts), getRowCount(a, fragmentRowCounts)));
+
+    List<List<FragmentRowRange>> bins = new ArrayList<>();
+    List<Long> binSizes = new ArrayList<>();
+    for (FragmentRowRange range : sorted) {
+      long size = getRowCount(range, fragmentRowCounts);
+      int target = -1;
+      for (int i = 0; i < bins.size(); i++) {
+        if (binSizes.get(i) + size <= maxRows) {
+          target = i;
+          break;
+        }
+      }
+      if (target >= 0) {
+        bins.get(target).add(range);
+        binSizes.set(target, binSizes.get(target) + size);
+      } else {
+        List<FragmentRowRange> bin = new ArrayList<>();
+        bin.add(range);
+        bins.add(bin);
+        binSizes.add(size);
+      }
+    }
+    return bins;
+  }
+
+  private long getRowCount(FragmentRowRange range, java.util.Map<Integer, Long> fragmentRowCounts) {
+    if (!range.isFullFragment() && range.getNumRows() > 0) {
+      return range.getNumRows();
+    }
+    Long count = fragmentRowCounts.get(range.getFragmentId());
+    return count != null ? count : 0;
   }
 
   private static Dataset openDataset(LanceSparkReadOptions readOptions) {
