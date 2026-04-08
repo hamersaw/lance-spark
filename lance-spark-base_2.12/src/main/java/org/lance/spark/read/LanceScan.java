@@ -85,6 +85,13 @@ public class LanceScan
   private transient int numPartitions = -1;
 
   /**
+   * Partition info detected from zonemap stats. When present, enables storage-partitioned joins
+   * (SPJ) by reporting the partition column as the output partitioning key instead of {@code
+   * _fragid}. Null when no partition-compatible column is detected.
+   */
+  private final ZonemapPartitionDetector.PartitionInfo partitionInfo;
+
+  /**
    * Initial storage options fetched from namespace.describeTable() on the driver. These are passed
    * to workers so they can reuse the credentials without calling describeTable again.
    */
@@ -106,6 +113,7 @@ public class LanceScan
       Filter[] pushedFilters,
       LanceStatistics statistics,
       java.util.Map<String, List<ZoneStats>> zonemapStats,
+      ZonemapPartitionDetector.PartitionInfo partitionInfo,
       java.util.Map<String, String> initialStorageOptions,
       String namespaceImpl,
       java.util.Map<String, String> namespaceProperties) {
@@ -120,6 +128,7 @@ public class LanceScan
         pushedFilters != null ? Arrays.copyOf(pushedFilters, pushedFilters.length) : new Filter[0];
     this.statistics = statistics;
     this.zonemapStats = zonemapStats != null ? zonemapStats : Collections.emptyMap();
+    this.partitionInfo = partitionInfo;
     this.initialStorageOptions = initialStorageOptions;
     this.namespaceImpl = namespaceImpl;
     this.namespaceProperties = namespaceProperties;
@@ -156,21 +165,29 @@ public class LanceScan
     InputPartition[] result =
         IntStream.range(0, finalSplits.size())
             .mapToObj(
-                i ->
-                    new LanceInputPartition(
-                        schema,
-                        i,
-                        finalSplits.get(i),
-                        resolvedReadOptions,
-                        whereConditions,
-                        limit,
-                        offset,
-                        topNSortOrders,
-                        pushedAggregation,
-                        scanId,
-                        initialStorageOptions,
-                        namespaceImpl,
-                        namespaceProperties))
+                i -> {
+                  LanceSplit split = finalSplits.get(i);
+                  InternalRow partKeyRow = null;
+                  if (partitionInfo != null) {
+                    int fragId = split.getFragments().get(0);
+                    partKeyRow = partitionInfo.partitionKeyForFragment(fragId);
+                  }
+                  return new LanceInputPartition(
+                      schema,
+                      i,
+                      split,
+                      resolvedReadOptions,
+                      whereConditions,
+                      limit,
+                      offset,
+                      topNSortOrders,
+                      pushedAggregation,
+                      scanId,
+                      initialStorageOptions,
+                      namespaceImpl,
+                      namespaceProperties,
+                      partKeyRow);
+                })
             .toArray(InputPartition[]::new);
 
     this.numPartitions = result.length;
@@ -329,20 +346,23 @@ public class LanceScan
   /**
    * Reports the output partitioning to Spark's optimizer.
    *
-   * <p>Since each {@link LanceSplit} maps to exactly one fragment and data within a fragment is
-   * physically grouped, we tell Spark that the output is partitioned by the fragment ID column
-   * ({@code _fragid}). This enables Spark to:
+   * <p>When a partition-compatible column is detected via zonemap stats (every fragment has a
+   * single distinct value for that column), we report the data column as the partition key. This
+   * enables Spark's storage-partitioned join (SPJ) protocol — allowing shuffle-free joins between
+   * Lance tables or between Lance and other data sources (e.g., Iceberg) that share the same
+   * partition column.
    *
-   * <ul>
-   *   <li>Skip unnecessary shuffles when the downstream operation is partition-aware
-   *   <li>Perform storage-partitioned joins (Spark 3.4+)
-   *   <li>Align partition boundaries with fragment-aware operations
-   * </ul>
+   * <p>When no partition column is detected, we fall back to reporting partitioning by fragment ID
+   * ({@code _fragid}).
    */
   @Override
   public Partitioning outputPartitioning() {
     if (numPartitions < 0) {
       return new UnknownPartitioning(0);
+    }
+    if (partitionInfo != null) {
+      Expression[] keys = new Expression[] {FieldReference.apply(partitionInfo.getColumnName())};
+      return new KeyGroupedPartitioning(keys, numPartitions);
     }
     Expression[] keys = new Expression[] {FieldReference.apply(LanceConstant.FRAGMENT_ID)};
     return new KeyGroupedPartitioning(keys, numPartitions);

@@ -21,6 +21,7 @@ import org.apache.spark.sql.connector.expressions.FieldReference;
 import org.apache.spark.sql.connector.expressions.aggregate.AggregateFunc;
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation;
 import org.apache.spark.sql.connector.expressions.aggregate.CountStar;
+import org.apache.spark.sql.connector.read.HasPartitionKey;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.connector.read.partitioning.KeyGroupedPartitioning;
@@ -33,6 +34,8 @@ import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -166,6 +169,86 @@ public class LanceScanTest {
     assertInstanceOf(FieldReference.class, keys[0]);
     String[] fieldNames = ((FieldReference) keys[0]).fieldNames();
     assertEquals(1, fieldNames.length);
+    assertEquals(LanceConstant.FRAGMENT_ID, fieldNames[0]);
+  }
+
+  // --- HasPartitionKey / SPJ ---
+
+  @Test
+  public void testInputPartitionsImplementHasPartitionKey() {
+    LanceScan scan = buildScan();
+    InputPartition[] partitions = scan.planInputPartitions();
+    assertTrue(partitions.length > 0);
+    for (InputPartition p : partitions) {
+      assertInstanceOf(HasPartitionKey.class, p);
+      HasPartitionKey hpk = (HasPartitionKey) p;
+      assertNotNull(hpk.partitionKey());
+    }
+  }
+
+  @Test
+  public void testPartitionKeyFallsBackToFragmentId() {
+    // Without partition info, partition key should be fragment ID
+    LanceScan scan = buildScan();
+    InputPartition[] partitions = scan.planInputPartitions();
+    for (InputPartition p : partitions) {
+      LanceInputPartition lip = (LanceInputPartition) p;
+      HasPartitionKey hpk = (HasPartitionKey) p;
+      int expectedFragId = lip.getLanceSplit().getFragments().get(0);
+      assertEquals(expectedFragId, hpk.partitionKey().getInt(0));
+    }
+  }
+
+  @Test
+  public void testOutputPartitioningWithPartitionInfo() {
+    // Create a LanceScan with partition info
+    Map<Integer, Comparable<?>> fragValues = new HashMap<>();
+    fragValues.put(0, "east");
+    fragValues.put(1, "west");
+    ZonemapPartitionDetector.PartitionInfo partInfo =
+        new ZonemapPartitionDetector.PartitionInfo("region", fragValues);
+
+    LanceScan scan =
+        new LanceScan(
+            TEST_SCHEMA,
+            TestUtils.TestTable1Config.readOptions,
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            new Filter[0],
+            null,
+            Collections.emptyMap(),
+            partInfo,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap());
+
+    // Plan partitions to set numPartitions
+    scan.planInputPartitions();
+
+    Partitioning partitioning = scan.outputPartitioning();
+    assertInstanceOf(KeyGroupedPartitioning.class, partitioning);
+
+    KeyGroupedPartitioning kgp = (KeyGroupedPartitioning) partitioning;
+    Expression[] keys = kgp.keys();
+    assertEquals(1, keys.length);
+    assertInstanceOf(FieldReference.class, keys[0]);
+    // Key should be "region", not "_fragid"
+    String[] fieldNames = ((FieldReference) keys[0]).fieldNames();
+    assertEquals("region", fieldNames[0]);
+  }
+
+  @Test
+  public void testOutputPartitioningWithoutPartitionInfoFallsBackToFragId() {
+    // No partition info → should use _fragid
+    LanceScan scan = buildScan();
+    scan.planInputPartitions();
+    Partitioning partitioning = scan.outputPartitioning();
+    assertInstanceOf(KeyGroupedPartitioning.class, partitioning);
+    KeyGroupedPartitioning kgp = (KeyGroupedPartitioning) partitioning;
+    String[] fieldNames = ((FieldReference) kgp.keys()[0]).fieldNames();
     assertEquals(LanceConstant.FRAGMENT_ID, fieldNames[0]);
   }
 }

@@ -155,6 +155,19 @@ public class LanceScanBuilder
     Map<String, List<ZoneStats>> zonemapStats =
         loadZonemapStatsForFilteredColumns(getOrOpenDataset(), pushedFilters);
 
+    // Load zonemap stats for schema columns (potential join keys)
+    // to detect partition-compatible columns for SPJ.
+    Map<String, List<ZoneStats>> allZonemapStats =
+        loadZonemapStatsForSchemaColumns(getOrOpenDataset(), zonemapStats);
+
+    // Detect partition-compatible columns from zonemap stats
+    ZonemapPartitionDetector.PartitionInfo partitionInfo = null;
+    java.util.Optional<ZonemapPartitionDetector.PartitionInfo> detected =
+        ZonemapPartitionDetector.detect(allZonemapStats);
+    if (detected.isPresent()) {
+      partitionInfo = detected.get();
+    }
+
     // Close the lazily opened dataset - it's no longer needed after build
     closeLazyDataset();
 
@@ -170,6 +183,7 @@ public class LanceScanBuilder
         pushedFilters,
         statistics,
         zonemapStats,
+        partitionInfo,
         initialStorageOptions,
         namespaceImpl,
         namespaceProperties);
@@ -332,6 +346,54 @@ public class LanceScanBuilder
 
     if (!result.isEmpty()) {
       LOG.info("Loaded zonemap stats for {} columns: {}", result.size(), result.keySet());
+    }
+
+    return result;
+  }
+
+  /**
+   * Loads zonemap stats for schema columns that haven't been loaded yet. This enables detection of
+   * partition-compatible columns for storage-partitioned joins (SPJ). Only loads stats for columns
+   * present in the current schema (which includes join keys) that also have a zonemap index.
+   *
+   * @param dataset the open dataset
+   * @param alreadyLoaded stats already loaded for filtered columns
+   * @return merged map of all zonemap stats (filtered + schema columns)
+   */
+  private Map<String, List<ZoneStats>> loadZonemapStatsForSchemaColumns(
+      Dataset dataset, Map<String, List<ZoneStats>> alreadyLoaded) {
+
+    Set<String> zonemapColumns = findZonemapIndexedColumns(dataset);
+    if (zonemapColumns.isEmpty()) {
+      return alreadyLoaded;
+    }
+
+    // Find schema columns with zonemap indexes that aren't
+    // already loaded
+    Set<String> schemaColumns = new HashSet<>();
+    for (StructField field : schema.fields()) {
+      String name = field.name();
+      if (zonemapColumns.contains(name) && !alreadyLoaded.containsKey(name)) {
+        schemaColumns.add(name);
+      }
+    }
+
+    if (schemaColumns.isEmpty()) {
+      return alreadyLoaded;
+    }
+
+    Map<String, List<ZoneStats>> result = new HashMap<>(alreadyLoaded);
+    for (String col : schemaColumns) {
+      try {
+        List<ZoneStats> stats = dataset.getZonemapStats(col);
+        if (!stats.isEmpty()) {
+          result.put(col, stats);
+          LOG.debug("Loaded {} zonemap zones for schema column '{}'", stats.size(), col);
+        }
+      } catch (Exception e) {
+        LOG.warn(
+            "Failed to load zonemap stats for schema" + " column '{}': {}", col, e.getMessage());
+      }
     }
 
     return result;
