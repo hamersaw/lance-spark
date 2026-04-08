@@ -36,13 +36,13 @@ public class LanceColumnarPartitionReader implements PartitionReader<ColumnarBat
     if (loadNextBatchFromCurrentReader()) {
       return true;
     }
-    while (rangeIndex < inputPartition.getLanceSplit().getRanges().size()) {
+    while (rangeIndex < inputPartition.getRanges().size()) {
       if (fragmentReader != null) {
         fragmentReader.close();
       }
       fragmentReader =
           LanceFragmentColumnarBatchScanner.create(
-              inputPartition.getLanceSplit().getRanges().get(rangeIndex), inputPartition);
+              inputPartition.getRanges().get(rangeIndex), inputPartition);
       rangeIndex++;
       if (loadNextBatchFromCurrentReader()) {
         return true;

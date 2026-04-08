@@ -16,9 +16,9 @@ package org.lance.spark.read;
 import java.io.Serializable;
 
 /**
- * Describes a row range within a single Lance fragment. Used by {@link LanceSplit} to define
- * precise partition boundaries that can split a fragment across partitions or combine multiple
- * fragment ranges into a single partition.
+ * Describes a row range within a single Lance fragment. Used by {@link LanceInputPartition} to
+ * define precise partition boundaries that can split a fragment across partitions or combine
+ * multiple fragment ranges into a single partition.
  *
  * <p>Use {@link #allRows(int)} for a range covering the entire fragment.
  */

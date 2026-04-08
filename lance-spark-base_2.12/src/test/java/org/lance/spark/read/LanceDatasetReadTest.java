@@ -118,7 +118,7 @@ public class LanceDatasetReadTest {
             new LanceInputPartition(
                 schema,
                 0 /* partitionId */,
-                new LanceSplit(Collections.singletonList(FragmentRowRange.allRows(fragment))),
+                Collections.singletonList(FragmentRowRange.allRows(fragment)),
                 TestUtils.TestTable1Config.readOptions,
                 Optional.empty() /* whereCondition */,
                 Optional.empty() /* limit */,

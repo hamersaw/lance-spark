@@ -15,7 +15,6 @@ package org.lance.spark;
 
 import org.lance.spark.read.FragmentRowRange;
 import org.lance.spark.read.LanceInputPartition;
-import org.lance.spark.read.LanceSplit;
 import org.lance.spark.utils.Optional;
 
 import org.apache.spark.sql.types.DataTypes;
@@ -81,8 +80,7 @@ public class TestUtils {
           new LanceInputPartition(
               schema,
               0 /* partitionId */,
-              new LanceSplit(
-                  Arrays.asList(FragmentRowRange.allRows(0), FragmentRowRange.allRows(1))),
+              Arrays.asList(FragmentRowRange.allRows(0), FragmentRowRange.allRows(1)),
               readOptions,
               Optional.empty() /* whereCondition */,
               Optional.empty() /* limit */,
