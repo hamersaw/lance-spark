@@ -695,6 +695,44 @@ class TestDDLIndex:
         assert query_result[0].id == 50
 
 
+    def test_create_zonemap_index(self, spark):
+        """Test CREATE INDEX with zonemap on integer column."""
+        spark.sql("""
+            CREATE TABLE default.test_table (
+                id INT,
+                name STRING,
+                value DOUBLE
+            )
+        """)
+
+        data = [(i, f"Name{i}", float(i * 10)) for i in range(100)]
+        df = spark.createDataFrame(data, ["id", "name", "value"])
+        df.writeTo("default.test_table").append()
+
+        # Create zonemap index on value column
+        result = spark.sql("""
+            ALTER TABLE default.test_table
+            CREATE INDEX idx_value_zm USING zonemap (value)
+        """).collect()
+
+        assert len(result) == 1
+        assert result[0][1] == "idx_value_zm"
+
+        # Verify index appears in SHOW INDEXES
+        indexes = spark.sql("""
+            SHOW INDEXES IN default.test_table
+        """).collect()
+        index_names = {row["name"] for row in indexes}
+        assert "idx_value_zm" in index_names
+
+        # Verify queries still work after indexing
+        query_result = spark.sql("""
+            SELECT * FROM default.test_table WHERE value = 500.0
+        """).collect()
+        assert len(query_result) == 1
+        assert query_result[0].id == 50
+
+
 class TestDDLOptimize:
     """Test DDL OPTIMIZE operations for compacting table fragments."""
 
