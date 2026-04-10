@@ -363,22 +363,14 @@ public class LanceScan
       // V2ScanPartitioningAndOrdering to see the partitioning
       // early enough for SPJ.
       int partCount =
-          numPartitions >= 0
-              ? numPartitions
-              : partitionInfo.getFragmentPartitionValues().size();
-      Expression[] keys =
-          new Expression[] {
-            FieldReference.apply(partitionInfo.getColumnName())
-          };
+          numPartitions >= 0 ? numPartitions : partitionInfo.getFragmentPartitionValues().size();
+      Expression[] keys = new Expression[] {FieldReference.apply(partitionInfo.getColumnName())};
       return new KeyGroupedPartitioning(keys, partCount);
     }
     if (numPartitions < 0) {
       return new UnknownPartitioning(0);
     }
-    Expression[] keys =
-        new Expression[] {
-          FieldReference.apply(LanceConstant.FRAGMENT_ID)
-        };
+    Expression[] keys = new Expression[] {FieldReference.apply(LanceConstant.FRAGMENT_ID)};
     return new KeyGroupedPartitioning(keys, numPartitions);
   }
 
