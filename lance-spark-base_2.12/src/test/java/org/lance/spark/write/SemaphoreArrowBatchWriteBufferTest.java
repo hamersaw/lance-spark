@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.unsafe.types.UTF8String;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -111,9 +112,12 @@ public class SemaphoreArrowBatchWriteBufferTest {
 
       runWriterReader(writeBuffer, totalRows, rowsWritten, rowsRead);
 
-      assertEquals(totalRows, rowsWritten.get());
-      assertEquals(totalRows, rowsRead.get());
-      writeBuffer.close();
+      try {
+        assertEquals(totalRows, rowsWritten.get());
+        assertEquals(totalRows, rowsRead.get());
+      } finally {
+        writeBuffer.close();
+      }
     }
   }
 
@@ -167,9 +171,12 @@ public class SemaphoreArrowBatchWriteBufferTest {
 
       runWriterReader(writeBuffer, totalRows, rowsWritten, rowsRead);
 
-      assertEquals(totalRows, rowsWritten.get());
-      assertEquals(totalRows, rowsRead.get());
-      writeBuffer.close();
+      try {
+        assertEquals(totalRows, rowsWritten.get());
+        assertEquals(totalRows, rowsRead.get());
+      } finally {
+        writeBuffer.close();
+      }
     }
   }
 
@@ -189,9 +196,12 @@ public class SemaphoreArrowBatchWriteBufferTest {
 
       runWriterReader(writeBuffer, totalRows, rowsWritten, rowsRead);
 
-      assertEquals(totalRows, rowsWritten.get());
-      assertEquals(totalRows, rowsRead.get());
-      writeBuffer.close();
+      try {
+        assertEquals(totalRows, rowsWritten.get());
+        assertEquals(totalRows, rowsRead.get());
+      } finally {
+        writeBuffer.close();
+      }
     }
   }
 
@@ -252,6 +262,58 @@ public class SemaphoreArrowBatchWriteBufferTest {
       assertEquals(batchSize, rowsWritten.get());
       assertEquals(batchSize, rowsRead.get());
       writeBuffer.close();
+    }
+  }
+
+  // ========== Byte-based flush tests ==========
+
+  private Schema createStringSchema() {
+    Field field =
+        new Field(
+            "data",
+            FieldType.nullable(org.apache.arrow.vector.types.Types.MinorType.VARCHAR.getType()),
+            null);
+    return new Schema(Collections.singletonList(field));
+  }
+
+  private StructType createStringSparkSchema() {
+    return new StructType(
+        new StructField[] {DataTypes.createStructField("data", DataTypes.StringType, true)});
+  }
+
+  /** Generate a string of approximately the given size in bytes. */
+  private UTF8String generateLargeString(int sizeBytes) {
+    byte[] data = new byte[sizeBytes];
+    java.util.Arrays.fill(data, (byte) 'A');
+    return UTF8String.fromBytes(data);
+  }
+
+  @Test
+  public void testByteBasedFlushWithSmallRows() throws Exception {
+    // With small rows, the row count limit should be reached before byte limit.
+    // This verifies that maxBatchBytes does not interfere with normal row-count flushing.
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      Schema schema = createIntSchema();
+      StructType sparkSchema = createIntSparkSchema();
+
+      final int totalRows = 100;
+      final int batchSize = 25;
+      final long maxBatchBytes = 100 * 1024 * 1024; // 100MB - should never be reached
+      final SemaphoreArrowBatchWriteBuffer writeBuffer =
+          new SemaphoreArrowBatchWriteBuffer(
+              allocator, schema, sparkSchema, batchSize, maxBatchBytes);
+
+      AtomicInteger rowsWritten = new AtomicInteger(0);
+      AtomicInteger rowsRead = new AtomicInteger(0);
+
+      runWriterReader(writeBuffer, totalRows, rowsWritten, rowsRead);
+
+      try {
+        assertEquals(totalRows, rowsWritten.get());
+        assertEquals(totalRows, rowsRead.get());
+      } finally {
+        writeBuffer.close();
+      }
     }
   }
 }
