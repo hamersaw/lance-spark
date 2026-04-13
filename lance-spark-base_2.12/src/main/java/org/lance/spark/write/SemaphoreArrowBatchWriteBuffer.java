@@ -53,13 +53,6 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
   private final int batchSize;
   private final long maxBatchBytes;
 
-  /**
-   * Child allocator used to track memory for this buffer. Since the parent allocator may be shared
-   * globally, we use a child allocator so that {@code getAllocatedMemory()} reflects only this
-   * buffer's memory.
-   */
-  private final BufferAllocator batchAllocator;
-
   private final ReentrantLock lock = new ReentrantLock();
   private final Condition canWrite = lock.newCondition();
   private final Condition batchReady = lock.newCondition();
@@ -87,7 +80,6 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     this.sparkSchema = sparkSchema;
     this.batchSize = batchSize;
     this.maxBatchBytes = maxBatchBytes;
-    this.batchAllocator = this.allocator;
     // Start with count = batchSize so the writer blocks on canWrite.await() until the
     // reader's prepareLoadNextBatch() initializes arrowWriter and resets count to 0.
     this.count = batchSize;
@@ -100,21 +92,16 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
 
   /** Simplified constructor that uses LanceRuntime allocator and converts Spark schema to Arrow. */
   public SemaphoreArrowBatchWriteBuffer(StructType sparkSchema, int batchSize) {
-    this(sparkSchema, batchSize, false);
+    this(sparkSchema, batchSize, false, LanceSparkWriteOptions.DEFAULT_MAX_BATCH_BYTES);
   }
 
-  /** Simplified constructor with large var types support. */
+  /** Constructor with large var types support, using LanceRuntime allocator. */
   public SemaphoreArrowBatchWriteBuffer(
       StructType sparkSchema, int batchSize, boolean useLargeVarTypes) {
     this(sparkSchema, batchSize, useLargeVarTypes, LanceSparkWriteOptions.DEFAULT_MAX_BATCH_BYTES);
   }
 
-  /** Simplified constructor that uses LanceRuntime allocator and converts Spark schema to Arrow. */
-  public SemaphoreArrowBatchWriteBuffer(StructType sparkSchema, int batchSize, long maxBatchBytes) {
-    this(sparkSchema, batchSize, false, maxBatchBytes);
-  }
-
-  /** Simplified constructor with large var types and maxBatchBytes support. */
+  /** Constructor with all tuning parameters, using LanceRuntime allocator. */
   public SemaphoreArrowBatchWriteBuffer(
       StructType sparkSchema, int batchSize, boolean useLargeVarTypes, long maxBatchBytes) {
     this(
@@ -141,7 +128,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     if (maxBatchBytes == Long.MAX_VALUE) {
       return false;
     }
-    return batchAllocator.getAllocatedMemory() >= maxBatchBytes;
+    return this.allocator.getAllocatedMemory() >= maxBatchBytes;
   }
 
   /** Returns whether the current batch should be flushed (by row count or byte size). */
@@ -209,6 +196,8 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     lock.lock();
     try {
       if (finished && count == 0) {
+        // Clear any buffers allocated by prepareLoadNextBatch() since no rows were written
+        this.getVectorSchemaRoot().clear();
         return false;
       }
 
@@ -242,7 +231,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
   protected synchronized void closeReadSource() throws IOException {
     // Close the child allocator that was created for byte tracking.
     // The VectorSchemaRoot is closed by ArrowReader.close() before this is called.
-    batchAllocator.close();
+    this.allocator.close();
   }
 
   @Override
