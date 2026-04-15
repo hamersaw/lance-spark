@@ -36,14 +36,15 @@ import java.util.concurrent.locks.ReentrantLock;
  * pulling batches via ArrowReader interface). It uses a lock with conditions to synchronize between
  * the two threads - the producer blocks until the consumer is ready for more data, and vice versa.
  *
- * <p>Batches are flushed when either the row count reaches {@code batchSize} or the total allocator
- * memory exceeds {@code maxBatchBytes}, whichever comes first. This prevents OOM when individual
- * rows are very large (e.g., rows with large binary/string columns or embeddings).
+ * <p>Batches are flushed when either the row count reaches {@code batchSize} or the cumulative
+ * bytes written in the current batch exceeds {@code maxBatchBytes}, whichever comes first. This
+ * prevents OOM when individual rows are very large (e.g., rows with large binary/string columns or
+ * embeddings).
  *
- * <p>Note: because this buffer reuses a single VectorSchemaRoot across batches, the allocator
- * retains capacity from previous batches. The byte-based flush triggers when the allocator's total
- * memory exceeds the threshold, which is conservative but safe — it bounds total memory regardless
- * of how Arrow internally manages buffer capacity.
+ * <p>Because this buffer reuses a single VectorSchemaRoot across batches, the allocator retains
+ * buffer capacity from previous batches. The byte-based flush tracks per-row allocator growth
+ * (before/after each write) to accurately measure each batch's memory usage regardless of retained
+ * capacity.
  *
  * @see QueuedArrowBatchWriteBuffer for a queue-based alternative with per-batch allocators
  */
@@ -62,6 +63,17 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
 
   @GuardedBy("lock")
   private int count;
+
+  /**
+   * Tracks per-batch memory usage for byte-based flushing. {@code batchStartBytes} captures the
+   * allocator memory after {@code clear()+allocateNew()}, and {@code currentBatchBytes} is the
+   * delta from that baseline. This is necessary because the shared allocator retains capacity from
+   * previous batches, so absolute memory is not reliable for per-batch tracking.
+   */
+  @GuardedBy("lock")
+  private long currentBatchBytes;
+
+  private long batchStartBytes;
 
   private org.lance.spark.arrow.LanceArrowWriter arrowWriter = null;
 
@@ -128,7 +140,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     if (maxBatchBytes == Long.MAX_VALUE) {
       return false;
     }
-    return this.allocator.getAllocatedMemory() >= maxBatchBytes;
+    return currentBatchBytes >= maxBatchBytes;
   }
 
   /** Returns whether the current batch should be flushed (by row count or byte size). */
@@ -150,6 +162,7 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
       }
 
       arrowWriter.write(row);
+      currentBatchBytes = this.allocator.getAllocatedMemory() - batchStartBytes;
       count++;
 
       if (isBatchFull()) {
@@ -177,13 +190,24 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
 
   @Override
   public void prepareLoadNextBatch() throws IOException {
-    super.prepareLoadNextBatch();
-    arrowWriter =
-        org.lance.spark.arrow.LanceArrowWriter$.MODULE$.create(
-            this.getVectorSchemaRoot(), sparkSchema);
+    // Don't call super.prepareLoadNextBatch() which does clear()+allocateNew().
+    // Arrow's allocateNew() remembers previous allocation sizes and pre-allocates
+    // that much capacity, which defeats per-batch byte tracking (the delta stays 0
+    // because writes fit within pre-allocated capacity). Instead, reset each vector
+    // (releasing memory and clearing allocation hints) then allocateNew() from scratch.
+    org.apache.arrow.vector.VectorSchemaRoot root = this.getVectorSchemaRoot();
+    for (org.apache.arrow.vector.FieldVector v : root.getFieldVectors()) {
+      v.clear();
+      v.setInitialCapacity(1);
+      v.allocateNew();
+    }
+    root.setRowCount(0);
+    arrowWriter = org.lance.spark.arrow.LanceArrowWriter$.MODULE$.create(root, sparkSchema);
     lock.lock();
     try {
       count = 0;
+      currentBatchBytes = 0;
+      batchStartBytes = this.allocator.getAllocatedMemory();
       canWrite.signalAll();
     } finally {
       lock.unlock();
