@@ -18,6 +18,8 @@ import org.lance.spark.LanceSparkWriteOptions;
 
 import com.google.common.base.Preconditions;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.types.StructType;
@@ -195,8 +197,8 @@ public class SemaphoreArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     // that much capacity, which defeats per-batch byte tracking (the delta stays 0
     // because writes fit within pre-allocated capacity). Instead, reset each vector
     // (releasing memory and clearing allocation hints) then allocateNew() from scratch.
-    org.apache.arrow.vector.VectorSchemaRoot root = this.getVectorSchemaRoot();
-    for (org.apache.arrow.vector.FieldVector v : root.getFieldVectors()) {
+    VectorSchemaRoot root = this.getVectorSchemaRoot();
+    for (FieldVector v : root.getFieldVectors()) {
       v.clear();
       v.setInitialCapacity(1);
       v.allocateNew();
