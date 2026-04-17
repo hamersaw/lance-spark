@@ -131,24 +131,16 @@ public class LanceDataWriter implements DataWriter<InternalRow> {
     @Override
     public DataWriter<InternalRow> createWriter(int partitionId, long taskId) {
       int batchSize = writeOptions.getBatchSize();
-      boolean useQueuedBuffer = writeOptions.isUseQueuedWriteBuffer();
+      int poolSize = writeOptions.getQueueDepth();
       boolean useLargeVarTypes = writeOptions.isUseLargeVarTypes();
       long maxBatchBytes = writeOptions.getMaxBatchBytes();
 
       // Merge initial storage options with write options
       WriteParams params = writeOptions.toWriteParams(initialStorageOptions);
 
-      // Select buffer type based on configuration
-      ArrowBatchWriteBuffer writeBuffer;
-      if (useQueuedBuffer) {
-        int queueDepth = writeOptions.getQueueDepth();
-        writeBuffer =
-            new QueuedArrowBatchWriteBuffer(
-                schema, batchSize, queueDepth, useLargeVarTypes, maxBatchBytes);
-      } else {
-        writeBuffer =
-            new SemaphoreArrowBatchWriteBuffer(schema, batchSize, useLargeVarTypes, maxBatchBytes);
-      }
+      ArrowBatchWriteBuffer writeBuffer =
+          new PooledArrowBatchWriteBuffer(
+              schema, batchSize, poolSize, useLargeVarTypes, maxBatchBytes);
 
       // Create fragment in background thread
       Callable<List<FragmentMetadata>> fragmentCreator =
