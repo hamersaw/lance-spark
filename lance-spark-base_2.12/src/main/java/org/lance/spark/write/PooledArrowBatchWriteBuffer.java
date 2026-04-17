@@ -213,15 +213,17 @@ public class PooledArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
     producerArrowWriter.write(row);
     producerRowCount++;
 
-    // Track variable-width byte growth
+    // Track variable-width byte growth. Use getBufferSizeFor(rowCount) because setSafe()
+    // updates the offset buffer but never advances the data buffer's writerIndex
+    // (that only happens at setValueCount), so readableBytes() would stay at 0.
     if (variableWidthIndices.length > 0) {
       long varBytes = 0;
       for (int idx : variableWidthIndices) {
         FieldVector vec = producerBatch.getVector(idx);
         if (vec instanceof BaseVariableWidthVector) {
-          varBytes += ((BaseVariableWidthVector) vec).getDataBuffer().readableBytes();
+          varBytes += ((BaseVariableWidthVector) vec).getBufferSizeFor(producerRowCount);
         } else if (vec instanceof BaseLargeVariableWidthVector) {
-          varBytes += ((BaseLargeVariableWidthVector) vec).getDataBuffer().readableBytes();
+          varBytes += ((BaseLargeVariableWidthVector) vec).getBufferSizeFor(producerRowCount);
         }
       }
       currentVarBytes = varBytes;
