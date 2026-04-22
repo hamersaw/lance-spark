@@ -16,8 +16,10 @@ package org.lance.spark.vectorized;
 import org.apache.arrow.vector.UInt2Vector;
 
 /**
- * Accessor for unsigned 16-bit integers (UInt2). Maps to Spark IntegerType (signed 32-bit can hold
- * all UInt16 values 0-65535).
+ * Accessor for unsigned 16-bit integers (UInt2).
+ *
+ * <p>Maps to Spark {@code IntegerType} because a signed 32-bit integer is the narrowest Spark type
+ * that can losslessly represent the full unsigned 16-bit range (0-65535).
  */
 public class UInt2Accessor {
   private final UInt2Vector accessor;
@@ -27,7 +29,7 @@ public class UInt2Accessor {
   }
 
   final int getInt(int rowId) {
-    // UInt2Vector.get() returns char which is already unsigned 16-bit
+    // UInt2Vector.get() returns a char, which Java already treats as an unsigned 16-bit value.
     return accessor.get(rowId);
   }
 

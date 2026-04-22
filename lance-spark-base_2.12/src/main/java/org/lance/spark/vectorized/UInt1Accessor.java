@@ -16,8 +16,10 @@ package org.lance.spark.vectorized;
 import org.apache.arrow.vector.UInt1Vector;
 
 /**
- * Accessor for unsigned 8-bit integers (UInt1). Maps to Spark ShortType (signed 16-bit can hold all
- * UInt8 values 0-255).
+ * Accessor for unsigned 8-bit integers (UInt1).
+ *
+ * <p>Maps to Spark {@code ShortType} because a signed 16-bit integer is the narrowest Spark type
+ * that can losslessly represent the full unsigned 8-bit range (0-255).
  */
 public class UInt1Accessor {
   private final UInt1Vector accessor;
