@@ -14,6 +14,7 @@
 package org.lance.spark;
 
 import org.lance.index.DistanceType;
+import org.lance.ipc.FullTextQuery;
 import org.lance.ipc.Query;
 
 import org.junit.jupiter.api.Assertions;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 public class LanceSparkReadOptionsJsonTest {
 
@@ -77,6 +79,33 @@ public class LanceSparkReadOptionsJsonTest {
     Assertions.assertEquals(DistanceType.L2, deserializedQuery.getDistanceType().get());
 
     Assertions.assertEquals(query.isUseIndex(), deserializedQuery.isUseIndex());
+  }
+
+  @Test
+  public void testFtsEqualsAndHashCodeStabilityAcrossConstructionPaths() {
+    // Two independently constructed instances carrying identical MatchQuery must be equals()
+    // and have the same hashCode() — required for ReusedExchange correctness.
+    FullTextQuery fts1 =
+        FullTextQuery.match(
+            "hello", "body", 1.5f, Optional.of(1), 50, FullTextQuery.Operator.AND, 2);
+    FullTextQuery fts2 =
+        FullTextQuery.match(
+            "hello", "body", 1.5f, Optional.of(1), 50, FullTextQuery.Operator.AND, 2);
+
+    LanceSparkReadOptions opts1 =
+        LanceSparkReadOptions.builder().datasetUri("s3://b/p").fullTextQuery(fts1).build();
+    LanceSparkReadOptions opts2 =
+        LanceSparkReadOptions.builder().datasetUri("s3://b/p").fullTextQuery(fts2).build();
+
+    Assertions.assertEquals(opts1, opts2, "Two instances with identical MatchQuery must be equal");
+    Assertions.assertEquals(
+        opts1.hashCode(), opts2.hashCode(), "Equal instances must have equal hashCodes");
+
+    // Different FTS query must produce different equals result
+    FullTextQuery fts3 = FullTextQuery.match("world", "body");
+    LanceSparkReadOptions opts3 =
+        LanceSparkReadOptions.builder().datasetUri("s3://b/p").fullTextQuery(fts3).build();
+    Assertions.assertNotEquals(opts1, opts3);
   }
 
   @Test

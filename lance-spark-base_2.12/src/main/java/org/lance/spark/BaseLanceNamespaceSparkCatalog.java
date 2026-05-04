@@ -31,6 +31,9 @@ import org.lance.namespace.model.ListTablesRequest;
 import org.lance.namespace.model.ListTablesResponse;
 import org.lance.namespace.model.RenameTableRequest;
 import org.lance.spark.function.LanceFragmentIdWithDefaultFunction;
+import org.lance.spark.function.LanceMatchFunction;
+import org.lance.spark.function.LanceMultiMatchFunction;
+import org.lance.spark.function.LancePhraseFunction;
 import org.lance.spark.utils.Optional;
 import org.lance.spark.utils.SchemaConverter;
 import org.lance.spark.utils.Utils;
@@ -283,17 +286,31 @@ public abstract class BaseLanceNamespaceSparkCatalog
     }
     String[] targetNamespace = namespace == null ? new String[0] : namespace;
     return new Identifier[] {
-      Identifier.of(targetNamespace, LanceFragmentIdWithDefaultFunction.NAME)
+      Identifier.of(targetNamespace, LanceFragmentIdWithDefaultFunction.NAME),
+      Identifier.of(targetNamespace, LanceMatchFunction.NAME),
+      Identifier.of(targetNamespace, LancePhraseFunction.NAME),
+      Identifier.of(targetNamespace, LanceMultiMatchFunction.NAME)
     };
   }
 
   @Override
   public UnboundFunction loadFunction(Identifier ident) throws NoSuchFunctionException {
-    if (ident.namespace().length != 0
-        || !LanceFragmentIdWithDefaultFunction.NAME.equalsIgnoreCase(ident.name())) {
+    if (ident.namespace().length != 0) {
       throw new NoSuchFunctionException(ident);
     }
-    return new LanceFragmentIdWithDefaultFunction();
+    if (LanceFragmentIdWithDefaultFunction.NAME.equalsIgnoreCase(ident.name())) {
+      return new LanceFragmentIdWithDefaultFunction();
+    }
+    if (LanceMatchFunction.NAME.equalsIgnoreCase(ident.name())) {
+      return new LanceMatchFunction();
+    }
+    if (LancePhraseFunction.NAME.equalsIgnoreCase(ident.name())) {
+      return new LancePhraseFunction();
+    }
+    if (LanceMultiMatchFunction.NAME.equalsIgnoreCase(ident.name())) {
+      return new LanceMultiMatchFunction();
+    }
+    throw new NoSuchFunctionException(ident);
   }
 
   @Override

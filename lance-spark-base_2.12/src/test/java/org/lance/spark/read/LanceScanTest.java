@@ -13,6 +13,10 @@
  */
 package org.lance.spark.read;
 
+import org.lance.index.DistanceType;
+import org.lance.ipc.FullTextQuery;
+import org.lance.ipc.Query;
+import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.TestUtils;
 
 import org.apache.spark.sql.catalyst.InternalRow;
@@ -38,6 +42,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class LanceScanTest {
 
@@ -241,6 +246,92 @@ public class LanceScanTest {
     scan.planInputPartitions();
     Partitioning partitioning = scan.outputPartitioning();
     assertInstanceOf(UnknownPartitioning.class, partitioning);
+  }
+
+  // --- getMetaData: nearest and fullTextQuery keys ---
+
+  @Test
+  public void testGetMetaDataNearestKeyAbsentWhenNull() {
+    LanceScan scan = buildScan();
+    Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
+    assertFalse(
+        meta.containsKey("nearest"), "nearest key must be absent when getNearest() == null");
+  }
+
+  @Test
+  public void testGetMetaDataNearestKeyPresentWhenSet() {
+    Query.Builder qb = new Query.Builder();
+    qb.setK(5);
+    qb.setColumn("vec");
+    qb.setKey(new float[] {1.0f, 2.0f});
+    qb.setUseIndex(true);
+    qb.setDistanceType(DistanceType.L2);
+    LanceSparkReadOptions opts =
+        LanceSparkReadOptions.builder()
+            .datasetUri(TestUtils.TestTable1Config.readOptions.getDatasetUri())
+            .nearest(qb.build())
+            .build();
+    LanceScan scan =
+        new LanceScan(
+            TEST_SCHEMA,
+            opts,
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            new Filter[0],
+            null,
+            Collections.emptyMap(),
+            null,
+            null,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap());
+    Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
+    assertTrue(
+        meta.containsKey("nearest"), "nearest key must be present when getNearest() != null");
+    assertNotNull(meta.get("nearest"), "nearest metadata value must not be null");
+  }
+
+  @Test
+  public void testGetMetaDataFullTextQueryKeyAbsentWhenNull() {
+    LanceScan scan = buildScan();
+    Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
+    assertFalse(
+        meta.containsKey("fullTextQuery"),
+        "fullTextQuery key must be absent when getFullTextQuery() == null");
+  }
+
+  @Test
+  public void testGetMetaDataFullTextQueryKeyPresentWhenSet() {
+    LanceSparkReadOptions opts =
+        LanceSparkReadOptions.builder()
+            .datasetUri(TestUtils.TestTable1Config.readOptions.getDatasetUri())
+            .fullTextQuery(FullTextQuery.match("hello world", "body"))
+            .build();
+    LanceScan scan =
+        new LanceScan(
+            TEST_SCHEMA,
+            opts,
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            new Filter[0],
+            null,
+            Collections.emptyMap(),
+            null,
+            null,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap());
+    Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
+    assertTrue(
+        meta.containsKey("fullTextQuery"),
+        "fullTextQuery key must be present when getFullTextQuery() != null");
+    assertNotNull(meta.get("fullTextQuery"), "fullTextQuery metadata value must not be null");
   }
 
   // --- equals / hashCode (required for ReusedExchange) ---

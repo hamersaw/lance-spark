@@ -13,6 +13,7 @@
  */
 package org.lance.spark;
 
+import org.lance.ipc.FullTextQuery;
 import org.lance.ipc.Query;
 
 import org.junit.jupiter.api.Assertions;
@@ -23,6 +24,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 
 public class LanceSparkReadOptionsSerializationTest {
 
@@ -54,6 +59,133 @@ public class LanceSparkReadOptionsSerializationTest {
     Assertions.assertEquals(originalQuery.getK(), deserializedQuery.getK());
     Assertions.assertEquals(originalQuery.getColumn(), deserializedQuery.getColumn());
     Assertions.assertArrayEquals(originalQuery.getKey(), deserializedQuery.getKey());
+  }
+
+  @Test
+  public void testFullTextQuerySerializationRoundTrip() throws IOException, ClassNotFoundException {
+    FullTextQuery fts =
+        FullTextQuery.match(
+            "search term", "body", 1.0f, Optional.of(1), 50, FullTextQuery.Operator.OR, 0);
+
+    LanceSparkReadOptions options =
+        LanceSparkReadOptions.builder().datasetUri("s3://bucket/path").fullTextQuery(fts).build();
+
+    Assertions.assertNotNull(options.getFullTextQuery());
+
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    ObjectOutputStream oos = new ObjectOutputStream(baos);
+    oos.writeObject(options);
+    oos.close();
+
+    ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
+    ObjectInputStream ois = new ObjectInputStream(bais);
+    LanceSparkReadOptions deserialized = (LanceSparkReadOptions) ois.readObject();
+
+    Assertions.assertNotNull(
+        deserialized.getFullTextQuery(), "fullTextQuery should not be null after deserialization");
+    FullTextQuery rtFts = deserialized.getFullTextQuery();
+    Assertions.assertEquals(FullTextQuery.Type.MATCH, rtFts.getType());
+    FullTextQuery.MatchQuery mq = (FullTextQuery.MatchQuery) rtFts;
+    Assertions.assertEquals("search term", mq.getQueryText());
+    Assertions.assertEquals("body", mq.getColumn());
+  }
+
+  @Test
+  public void testWithVersionPropagatesFullTextQuery() {
+    FullTextQuery fts = FullTextQuery.phrase("quick brown fox", "body", 1);
+    LanceSparkReadOptions options =
+        LanceSparkReadOptions.builder().datasetUri("s3://bucket/path").fullTextQuery(fts).build();
+
+    LanceSparkReadOptions versioned = options.withVersion(42);
+    Assertions.assertNotNull(
+        versioned.getFullTextQuery(), "fullTextQuery must not be dropped by withVersion()");
+    Assertions.assertEquals(42, versioned.getVersion());
+    // Structural equality check
+    Assertions.assertTrue(
+        org.lance.spark.utils.FullTextQueryUtils.equals(
+            options.getFullTextQuery(), versioned.getFullTextQuery()));
+  }
+
+  @Test
+  public void testFromOptionsParsesFtsSubtype() {
+    FullTextQuery original = FullTextQuery.phrase("hello world", "body", 0);
+    String json = org.lance.spark.utils.FullTextQueryUtils.fullTextQueryToString(original);
+
+    Map<String, String> props = new HashMap<>();
+    props.put("path", "s3://bucket/path");
+    props.put(LanceSparkReadOptions.CONFIG_FULL_TEXT_QUERY, json);
+
+    LanceSparkReadOptions opts = LanceSparkReadOptions.from(props);
+    Assertions.assertNotNull(opts.getFullTextQuery());
+    Assertions.assertEquals(FullTextQuery.Type.MATCH_PHRASE, opts.getFullTextQuery().getType());
+    FullTextQuery.PhraseQuery pq = (FullTextQuery.PhraseQuery) opts.getFullTextQuery();
+    Assertions.assertEquals("hello world", pq.getQueryText());
+    Assertions.assertEquals("body", pq.getColumn());
+  }
+
+  @Test
+  public void testMultiMatchQuerySerializationRoundTrip()
+      throws IOException, ClassNotFoundException {
+    FullTextQuery fts = FullTextQuery.multiMatch("hello world", Arrays.asList("body", "title"));
+
+    LanceSparkReadOptions options =
+        LanceSparkReadOptions.builder().datasetUri("s3://bucket/path").fullTextQuery(fts).build();
+
+    Assertions.assertNotNull(options.getFullTextQuery());
+
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    ObjectOutputStream oos = new ObjectOutputStream(baos);
+    oos.writeObject(options);
+    oos.close();
+
+    ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
+    ObjectInputStream ois = new ObjectInputStream(bais);
+    LanceSparkReadOptions deserialized = (LanceSparkReadOptions) ois.readObject();
+
+    Assertions.assertNotNull(
+        deserialized.getFullTextQuery(), "fullTextQuery must not be null after deserialization");
+    Assertions.assertEquals(
+        FullTextQuery.Type.MULTI_MATCH, deserialized.getFullTextQuery().getType());
+    FullTextQuery.MultiMatchQuery mmq =
+        (FullTextQuery.MultiMatchQuery) deserialized.getFullTextQuery();
+    Assertions.assertEquals("hello world", mmq.getQueryText());
+    Assertions.assertEquals(Arrays.asList("body", "title"), mmq.getColumns());
+    Assertions.assertEquals(FullTextQuery.Operator.OR, mmq.getOperator());
+    Assertions.assertFalse(
+        mmq.getBoosts().isPresent(), "boosts must be absent for default multiMatch");
+  }
+
+  @Test
+  public void testWithVersionPropagatesMultiMatchQuery() {
+    FullTextQuery fts = FullTextQuery.multiMatch("quick fox", Arrays.asList("title", "body"));
+    LanceSparkReadOptions options =
+        LanceSparkReadOptions.builder().datasetUri("s3://bucket/path").fullTextQuery(fts).build();
+
+    LanceSparkReadOptions versioned = options.withVersion(7);
+    Assertions.assertNotNull(
+        versioned.getFullTextQuery(), "fullTextQuery must not be dropped by withVersion()");
+    Assertions.assertEquals(7, versioned.getVersion());
+    Assertions.assertTrue(
+        org.lance.spark.utils.FullTextQueryUtils.equals(
+            options.getFullTextQuery(), versioned.getFullTextQuery()));
+  }
+
+  @Test
+  public void testFromOptionsParsesFtsMultiMatchSubtype() {
+    FullTextQuery original = FullTextQuery.multiMatch("search term", Arrays.asList("col1", "col2"));
+    String json = org.lance.spark.utils.FullTextQueryUtils.fullTextQueryToString(original);
+
+    Map<String, String> props = new HashMap<>();
+    props.put("path", "s3://bucket/path");
+    props.put(LanceSparkReadOptions.CONFIG_FULL_TEXT_QUERY, json);
+
+    LanceSparkReadOptions opts = LanceSparkReadOptions.from(props);
+    Assertions.assertNotNull(opts.getFullTextQuery());
+    Assertions.assertEquals(FullTextQuery.Type.MULTI_MATCH, opts.getFullTextQuery().getType());
+    FullTextQuery.MultiMatchQuery mmq = (FullTextQuery.MultiMatchQuery) opts.getFullTextQuery();
+    Assertions.assertEquals("search term", mmq.getQueryText());
+    Assertions.assertEquals(Arrays.asList("col1", "col2"), mmq.getColumns());
+    Assertions.assertEquals(FullTextQuery.Operator.OR, mmq.getOperator());
   }
 
   @Test

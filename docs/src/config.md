@@ -53,6 +53,7 @@ The following features require the Lance Spark SQL extension to be enabled:
 - [UPDATE COLUMNS with backfill](operations/dml/update-columns.md) - Update existing columns using data from a source
 - [OPTIMIZE](operations/ddl/optimize.md) - Compact table fragments for improved query performance
 - [VACUUM](operations/ddl/vacuum.md) - Remove old versions and reclaim storage space
+- [Full-Text Search](operations/dql/fts.md) - `lance_match`, `lance_phrase`, and `lance_multi_match` SQL functions for querying FTS indexes
 
 ## Basic Setup
 

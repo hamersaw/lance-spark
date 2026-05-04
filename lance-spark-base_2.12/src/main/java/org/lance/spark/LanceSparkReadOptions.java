@@ -14,8 +14,10 @@
 package org.lance.spark;
 
 import org.lance.ReadOptions;
+import org.lance.ipc.FullTextQuery;
 import org.lance.ipc.Query;
 import org.lance.namespace.LanceNamespace;
+import org.lance.spark.utils.FullTextQueryUtils;
 import org.lance.spark.utils.QueryUtils;
 
 import com.google.common.base.Preconditions;
@@ -47,7 +49,7 @@ import java.util.Objects;
  * }</pre>
  */
 public class LanceSparkReadOptions implements Serializable {
-  private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 2L;
 
   public static final String CONFIG_DATASET_URI = "path";
   public static final String CONFIG_PUSH_DOWN_FILTERS = "pushDownFilters";
@@ -59,6 +61,7 @@ public class LanceSparkReadOptions implements Serializable {
   public static final String CONFIG_TOP_N_PUSH_DOWN = "topN_push_down";
 
   public static final String CONFIG_NEAREST = "nearest";
+  public static final String CONFIG_FULL_TEXT_QUERY = "fullTextQuery";
   public static final String LANCE_FILE_SUFFIX = ".lance";
 
   private static final boolean DEFAULT_PUSH_DOWN_FILTERS = true;
@@ -76,6 +79,7 @@ public class LanceSparkReadOptions implements Serializable {
   private final Integer metadataCacheSize;
   private final int batchSize;
   private transient Query nearest;
+  private transient FullTextQuery fullTextQuery;
   private final boolean topNPushDown;
   private final Map<String, String> storageOptions;
 
@@ -100,6 +104,7 @@ public class LanceSparkReadOptions implements Serializable {
     this.metadataCacheSize = builder.metadataCacheSize;
     this.batchSize = builder.batchSize;
     this.nearest = builder.nearest;
+    this.fullTextQuery = builder.fullTextQuery;
     this.topNPushDown = builder.topNPushDown;
     this.storageOptions = new HashMap<>(builder.storageOptions);
     this.namespace = builder.namespace;
@@ -215,6 +220,10 @@ public class LanceSparkReadOptions implements Serializable {
     return nearest;
   }
 
+  public FullTextQuery getFullTextQuery() {
+    return fullTextQuery;
+  }
+
   public boolean isTopNPushDown() {
     return topNPushDown;
   }
@@ -270,6 +279,7 @@ public class LanceSparkReadOptions implements Serializable {
         .metadataCacheSize(this.metadataCacheSize)
         .batchSize(this.batchSize)
         .nearest(this.nearest)
+        .fullTextQuery(this.fullTextQuery)
         .topNPushDown(this.topNPushDown)
         .storageOptions(this.storageOptions)
         .namespace(this.namespace)
@@ -307,12 +317,15 @@ public class LanceSparkReadOptions implements Serializable {
   private void writeObject(ObjectOutputStream out) throws IOException {
     out.defaultWriteObject();
     out.writeObject(QueryUtils.queryToString(nearest));
+    out.writeObject(FullTextQueryUtils.fullTextQueryToString(fullTextQuery));
   }
 
   private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
     in.defaultReadObject();
-    String json = (String) in.readObject();
-    this.nearest = QueryUtils.stringToQuery(json);
+    String nearestJson = (String) in.readObject();
+    this.nearest = QueryUtils.stringToQuery(nearestJson);
+    String ftsJson = (String) in.readObject();
+    this.fullTextQuery = FullTextQueryUtils.stringToFullTextQuery(ftsJson);
   }
 
   @Override
@@ -324,7 +337,10 @@ public class LanceSparkReadOptions implements Serializable {
     return pushDownFilters == that.pushDownFilters
         && batchSize == that.batchSize
         && topNPushDown == that.topNPushDown
-        && Objects.equals(nearest, that.nearest)
+        // TODO: replace with Objects.equals once https://github.com/lance-format/lance/pull/6674
+        //       is merged and released (native equals()/hashCode() on Query and FullTextQuery).
+        && QueryUtils.equals(nearest, that.nearest)
+        && FullTextQueryUtils.equals(fullTextQuery, that.fullTextQuery)
         && Objects.equals(datasetUri, that.datasetUri)
         && Objects.equals(blockSize, that.blockSize)
         && Objects.equals(version, that.version)
@@ -344,7 +360,11 @@ public class LanceSparkReadOptions implements Serializable {
         indexCacheSize,
         metadataCacheSize,
         batchSize,
-        nearest,
+        // TODO: replace with nearest / fullTextQuery directly once
+        //       https://github.com/lance-format/lance/pull/6674 is merged and released
+        //       (native equals()/hashCode() on Query and FullTextQuery).
+        QueryUtils.queryToString(nearest),
+        FullTextQueryUtils.fullTextQueryToString(fullTextQuery),
         topNPushDown,
         storageOptions,
         tableId);
@@ -356,6 +376,7 @@ public class LanceSparkReadOptions implements Serializable {
     private boolean pushDownFilters = DEFAULT_PUSH_DOWN_FILTERS;
     private Integer blockSize;
     private Query nearest;
+    private FullTextQuery fullTextQuery;
     private Integer version;
     private Integer indexCacheSize;
     private Integer metadataCacheSize;
@@ -394,6 +415,11 @@ public class LanceSparkReadOptions implements Serializable {
       } catch (Exception e) {
         throw new IllegalArgumentException("Failed to parse nearest query from json: " + json, e);
       }
+      return this;
+    }
+
+    public Builder fullTextQuery(FullTextQuery fullTextQuery) {
+      this.fullTextQuery = fullTextQuery;
       return this;
     }
 
@@ -476,6 +502,10 @@ public class LanceSparkReadOptions implements Serializable {
       if (options.containsKey(CONFIG_NEAREST)) {
         String json = options.get(CONFIG_NEAREST);
         nearest(json);
+      }
+      if (options.containsKey(CONFIG_FULL_TEXT_QUERY)) {
+        String json = options.get(CONFIG_FULL_TEXT_QUERY);
+        this.fullTextQuery = FullTextQueryUtils.stringToFullTextQuery(json);
       }
       return this;
     }

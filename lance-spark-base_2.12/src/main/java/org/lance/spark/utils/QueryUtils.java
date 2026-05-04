@@ -26,6 +26,8 @@ import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Objects;
 import java.util.Optional;
 
 public class QueryUtils {
@@ -51,6 +53,35 @@ public class QueryUtils {
     } catch (JsonProcessingException e) {
       throw new RuntimeException("Failed to serialize query", e);
     }
+  }
+
+  /**
+   * Structural equality for two {@link Query} instances. Handles null inputs. Excludes {@code
+   * queryParallelism} — it is a per-execution hint not captured in the serialized string and not
+   * preserved by {@code QuerySerializer}, so including it would produce an inconsistent
+   * equals/hashCode pair.
+   *
+   * <p>TODO: Remove this method and replace all call sites with {@code Objects.equals(a, b)} once
+   * https://github.com/lance-format/lance/pull/6674 is merged and released. That PR adds native
+   * {@code equals()}/{@code hashCode()} to {@code Query}; until then reference equality from {@code
+   * Object} makes {@code Objects.equals} incorrect for independently-constructed instances.
+   */
+  public static boolean equals(Query a, Query b) {
+    if (a == null && b == null) {
+      return true;
+    }
+    if (a == null || b == null) {
+      return false;
+    }
+    return Objects.equals(a.getColumn(), b.getColumn())
+        && Arrays.equals(a.getKey(), b.getKey())
+        && a.getK() == b.getK()
+        && a.getMinimumNprobes() == b.getMinimumNprobes()
+        && Objects.equals(a.getMaximumNprobes(), b.getMaximumNprobes())
+        && Objects.equals(a.getEf(), b.getEf())
+        && Objects.equals(a.getRefineFactor(), b.getRefineFactor())
+        && Objects.equals(a.getDistanceType(), b.getDistanceType())
+        && a.isUseIndex() == b.isUseIndex();
   }
 
   public static Query stringToQuery(String json) {
