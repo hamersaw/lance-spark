@@ -13,7 +13,6 @@
  */
 package org.lance.spark.read;
 
-import org.apache.spark.sql.AnalysisException;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -206,23 +205,23 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
     assertNotNull(meta.get("fullTextQuery"), "fullTextQuery metadata value must not be null");
   }
 
-  // ── Scenario: negative slop raises AnalysisException ─────────────────────
+  // ── Scenario: negative slop raises IllegalArgumentException ─────────────────────
 
   @Test
   public void testNegativeSlopRaisesAnalysisException() {
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
                         String.format(
                             "SELECT id FROM %s WHERE lance_phrase(body, 'hello', -1)", fullTable))
                     .collect(),
-            "Expected AnalysisException for negative slop");
+            "Expected IllegalArgumentException for negative slop");
     assertTrue(
         ex.getMessage().contains("slop"),
-        "AnalysisException message must mention 'slop', got: " + ex.getMessage());
+        "IllegalArgumentException message must mention 'slop', got: " + ex.getMessage());
   }
 
   // ── Scenario: planning-time rejection: lance_phrase as OR operand ─────────
@@ -230,7 +229,7 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
   @Test
   public void testLancePhraseOrScalarRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -238,7 +237,7 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
                         "SELECT id FROM %s WHERE lance_phrase(body, 'hello world') OR price > 100.0",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for lance_phrase OR scalar");
+        "Expected IllegalArgumentException for lance_phrase OR scalar");
   }
 
   // ── Scenario: planning-time rejection: duplicate lance_phrase ─────────────
@@ -246,7 +245,7 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
   @Test
   public void testDuplicatePhrasePredRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -254,7 +253,7 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
                         "SELECT id FROM %s WHERE lance_phrase(body, 'hello world') AND lance_phrase(body, 'foo bar')",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for duplicate lance_phrase in WHERE clause");
+        "Expected IllegalArgumentException for duplicate lance_phrase in WHERE clause");
   }
 
   // ── Scenario: planning-time rejection: mixed lance_match + lance_phrase ───
@@ -262,7 +261,7 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
   @Test
   public void testMixedMatchAndPhrasePredicateRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -270,7 +269,7 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
                         "SELECT id FROM %s WHERE lance_match(body, 'hello') AND lance_phrase(body, 'hello world')",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for mixed lance_match + lance_phrase in WHERE clause");
+        "Expected IllegalArgumentException for mixed lance_match + lance_phrase in WHERE clause");
   }
 
   // ── Scenario: combined phrase + scalar predicate — scalar is not dropped ──
@@ -301,7 +300,7 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
     // inside an OR that is itself an AND operand. OR detection must traverse the
     // condition tree at any nesting depth, not only inspect top-level operands.
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -309,16 +308,16 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
                         "SELECT id FROM %s WHERE (lance_phrase(body, 'hello world') OR price > 5.0) AND id > 3",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for lance_phrase nested inside OR sub-expression");
+        "Expected IllegalArgumentException for lance_phrase nested inside OR sub-expression");
   }
 
   // ── Scenario: OR of two lance_phrase predicates — names lance_multi_match ─
 
   @Test
   public void testOrOfTwoPhrasePredRaisesAnalysisExceptionNamingMultiMatch() {
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
@@ -326,10 +325,10 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
                             "SELECT id FROM %s WHERE lance_phrase(body, 'hello world') OR lance_phrase(body, 'foo bar')",
                             fullTable))
                     .collect(),
-            "Expected AnalysisException for OR of two lance_phrase predicates");
+            "Expected IllegalArgumentException for OR of two lance_phrase predicates");
     assertTrue(
         ex.getMessage().contains("lance_multi_match"),
-        "AnalysisException message must name lance_multi_match as the alternative, got: "
+        "IllegalArgumentException message must name lance_multi_match as the alternative, got: "
             + ex.getMessage());
   }
 
@@ -340,12 +339,12 @@ public abstract class BaseFtsPhraseMatchPushdownTest {
     // The query text must be a string literal — a column reference cannot be pushed
     // to the FTS index at planning time and has no representation there.
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(String.format("SELECT id FROM %s t WHERE lance_phrase(body, body)", fullTable))
                 .collect(),
-        "Expected AnalysisException when lance_phrase query argument is a column reference");
+        "Expected IllegalArgumentException when lance_phrase query argument is a column reference");
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────

@@ -13,7 +13,6 @@
  */
 package org.lance.spark.read;
 
-import org.apache.spark.sql.AnalysisException;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -317,9 +316,9 @@ public abstract class BaseFtsAdvancedOptionsTest {
 
   @Test
   public void testUnknownOptionKeyRaisesAnalysisException() {
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
@@ -327,7 +326,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
                             "SELECT id FROM %s WHERE lance_match(body, 'hello', 'fuzzines=1')",
                             fullTable))
                     .collect(),
-            "Expected AnalysisException for unknown option key 'fuzzines'");
+            "Expected IllegalArgumentException for unknown option key 'fuzzines'");
     assertTrue(
         ex.getMessage().contains("fuzzines"),
         "Error message must identify the unknown key, got: " + ex.getMessage());
@@ -335,9 +334,9 @@ public abstract class BaseFtsAdvancedOptionsTest {
 
   @Test
   public void testMaxExpansionsZeroRaisesAnalysisException() {
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
@@ -345,7 +344,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
                             "SELECT id FROM %s WHERE lance_match(body, 'hello', 'max_expansions=0')",
                             fullTable))
                     .collect(),
-            "Expected AnalysisException for max_expansions=0");
+            "Expected IllegalArgumentException for max_expansions=0");
     assertTrue(
         ex.getMessage().contains("max_expansions"),
         "Error message must mention max_expansions, got: " + ex.getMessage());
@@ -354,7 +353,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
   @Test
   public void testMalformedBoostValueRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -362,17 +361,17 @@ public abstract class BaseFtsAdvancedOptionsTest {
                         "SELECT id FROM %s WHERE lance_match(body, 'hello', 'boost=abc')",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for malformed boost value");
+        "Expected IllegalArgumentException for malformed boost value");
   }
 
   @Test
   public void testLanceMultiMatchAsOrOperandWithScalarRaisesAnalysisException() {
     // Acceptance criterion: lance_multi_match as a direct OR operand with a non-FTS scalar
-    // must raise AnalysisException at planning time (OR semantics cannot be preserved after
+    // must raise IllegalArgumentException at planning time (OR semantics cannot be preserved after
     // pushdown).
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
@@ -380,7 +379,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
                             "SELECT id FROM %s WHERE lance_multi_match('hello', body, title) OR id > 5",
                             fullTable))
                     .collect(),
-            "Expected AnalysisException for lance_multi_match OR scalar");
+            "Expected IllegalArgumentException for lance_multi_match OR scalar");
     assertTrue(
         ex.getMessage().contains("OR"),
         "Error message must explain the OR restriction, got: " + ex.getMessage());
@@ -388,10 +387,10 @@ public abstract class BaseFtsAdvancedOptionsTest {
 
   @Test
   public void testTwoFtsPredicatesIncludingMultiMatchRaisesAnalysisException() {
-    // Two FTS predicates in the same WHERE clause must raise AnalysisException regardless of
+    // Two FTS predicates in the same WHERE clause must raise IllegalArgumentException regardless of
     // which FTS functions are combined.
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -399,13 +398,13 @@ public abstract class BaseFtsAdvancedOptionsTest {
                         "SELECT id FROM %s WHERE lance_multi_match('hello', body, title) AND lance_match(body, 'world')",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for two FTS predicates in WHERE");
+        "Expected IllegalArgumentException for two FTS predicates in WHERE");
   }
 
   @Test
   public void testTwoLanceMultiMatchInWhereRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -413,7 +412,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
                         "SELECT id FROM %s WHERE lance_multi_match('hello', body, title) AND lance_multi_match('world', body, title)",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for two lance_multi_match in WHERE");
+        "Expected IllegalArgumentException for two lance_multi_match in WHERE");
   }
 
   // ── lance_multi_match operator option ────────────────────────────────────
@@ -516,9 +515,9 @@ public abstract class BaseFtsAdvancedOptionsTest {
 
   @Test
   public void testLanceMultiMatchUnknownOptionKeyRaisesAnalysisException() {
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
@@ -526,7 +525,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
                             "SELECT id FROM %s WHERE lance_multi_match('hello', 'boost=2.0', body, title)",
                             fullTable))
                     .collect(),
-            "Expected AnalysisException for unknown option key 'boost' in lance_multi_match");
+            "Expected IllegalArgumentException for unknown option key 'boost' in lance_multi_match");
     assertTrue(
         ex.getMessage().contains("boost"),
         "Error message must identify the unknown key, got: " + ex.getMessage());
@@ -535,7 +534,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
   @Test
   public void testLanceMultiMatchInvalidOperatorValueRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -543,16 +542,16 @@ public abstract class BaseFtsAdvancedOptionsTest {
                         "SELECT id FROM %s WHERE lance_multi_match('hello', 'operator=MAYBE', body, title)",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for invalid operator value");
+        "Expected IllegalArgumentException for invalid operator value");
   }
 
   @Test
   public void testLanceMultiMatchOptionsWithSingleColumnRaisesAnalysisException() {
     // lance_multi_match('query', 'operator=AND', col1) has arity 3 with an options string
     // at position 1, so colStartIdx=2 and args.size - colStartIdx = 1 < 2 → must reject.
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
@@ -560,7 +559,7 @@ public abstract class BaseFtsAdvancedOptionsTest {
                             "SELECT id FROM %s WHERE lance_multi_match('hello', 'operator=AND', body)",
                             fullTable))
                     .collect(),
-            "Expected AnalysisException for lance_multi_match with options and only 1 column");
+            "Expected IllegalArgumentException for lance_multi_match with options and only 1 column");
     assertTrue(
         ex.getMessage().contains("at least 2 column"),
         "Error message must mention minimum column requirement, got: " + ex.getMessage());

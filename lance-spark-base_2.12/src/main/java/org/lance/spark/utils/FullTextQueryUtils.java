@@ -173,7 +173,7 @@ public final class FullTextQueryUtils {
             Operator operator = Operator.valueOf(node.get(FIELD_OPERATOR).asText());
             if (node.has(FIELD_BOOSTS) && !node.get(FIELD_BOOSTS).isNull()) {
               ArrayNode boostsNode = (ArrayNode) node.get(FIELD_BOOSTS);
-              List<java.lang.Float> boosts = new ArrayList<>();
+              List<Float> boosts = new ArrayList<>();
               for (JsonNode b : boostsNode) {
                 boosts.add((float) b.asDouble());
               }
@@ -250,16 +250,15 @@ public final class FullTextQueryUtils {
     }
   }
 
-  private static boolean equalsBoostLists(
-      Optional<List<java.lang.Float>> a, Optional<List<java.lang.Float>> b) {
+  private static boolean equalsBoostLists(Optional<List<Float>> a, Optional<List<Float>> b) {
     if (!a.isPresent() && !b.isPresent()) {
       return true;
     }
     if (!a.isPresent() || !b.isPresent()) {
       return false;
     }
-    List<java.lang.Float> la = a.get();
-    List<java.lang.Float> lb = b.get();
+    List<Float> la = a.get();
+    List<Float> lb = b.get();
     if (la.size() != lb.size()) {
       return false;
     }

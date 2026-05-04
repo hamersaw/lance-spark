@@ -19,7 +19,6 @@ import org.lance.spark.LanceDataSource;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.utils.QueryUtils;
 
-import org.apache.spark.sql.AnalysisException;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -241,7 +240,7 @@ public abstract class BaseFtsMatchPushdownTest {
   @Test
   public void testDuplicateFtsPredicateRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -249,7 +248,7 @@ public abstract class BaseFtsMatchPushdownTest {
                         "SELECT id FROM %s WHERE lance_match(body, 'hello') AND lance_match(body, 'world')",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for duplicate lance_match in WHERE clause");
+        "Expected IllegalArgumentException for duplicate lance_match in WHERE clause");
   }
 
   // ── Scenario: planning-time rejection: FTS as OR operand with scalar ─────
@@ -257,7 +256,7 @@ public abstract class BaseFtsMatchPushdownTest {
   @Test
   public void testFtsOrScalarRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -265,7 +264,7 @@ public abstract class BaseFtsMatchPushdownTest {
                         "SELECT id FROM %s WHERE lance_match(body, 'hello') OR price > 100.0",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for lance_match OR scalar");
+        "Expected IllegalArgumentException for lance_match OR scalar");
   }
 
   // ── Scenario: planning-time rejection: FTS nested inside OR sub-expression
@@ -273,7 +272,7 @@ public abstract class BaseFtsMatchPushdownTest {
   @Test
   public void testNestedOrWithFtsRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
@@ -281,7 +280,7 @@ public abstract class BaseFtsMatchPushdownTest {
                         "SELECT id FROM %s WHERE (lance_match(body, 'hello') OR price > 5.0) AND id > 3",
                         fullTable))
                 .collect(),
-        "Expected AnalysisException for lance_match nested inside OR sub-expression");
+        "Expected IllegalArgumentException for lance_match nested inside OR sub-expression");
   }
 
   // ── Scenario: planning-time rejection: runtime-valued query argument ─────
@@ -291,21 +290,21 @@ public abstract class BaseFtsMatchPushdownTest {
     // The query text must be a string literal — a column reference cannot be pushed to the index
     // at planning time.
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(String.format("SELECT id FROM %s t WHERE lance_match(body, body)", fullTable))
                 .collect(),
-        "Expected AnalysisException when lance_match query argument is a column reference");
+        "Expected IllegalArgumentException when lance_match query argument is a column reference");
   }
 
   // ── Scenario: planning-time rejection: OR(FTS, FTS) ─────────────────────
 
   @Test
   public void testOrOfTwoFtsPredicatesRaisesAnalysisExceptionNamingMultiMatch() {
-    AnalysisException ex =
+    IllegalArgumentException ex =
         assertThrows(
-            AnalysisException.class,
+            IllegalArgumentException.class,
             () ->
                 spark
                     .sql(
@@ -313,10 +312,10 @@ public abstract class BaseFtsMatchPushdownTest {
                             "SELECT id FROM %s WHERE lance_match(body, 'hello') OR lance_match(body, 'world')",
                             fullTable))
                     .collect(),
-            "Expected AnalysisException for OR of two lance_match predicates");
+            "Expected IllegalArgumentException for OR of two lance_match predicates");
     assertTrue(
         ex.getMessage().contains("lance_multi_match"),
-        "AnalysisException message must name lance_multi_match as the alternative, got: "
+        "IllegalArgumentException message must name lance_multi_match as the alternative, got: "
             + ex.getMessage());
   }
 
@@ -325,14 +324,14 @@ public abstract class BaseFtsMatchPushdownTest {
   @Test
   public void testNotWrappedFtsRaisesAnalysisException() {
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark
                 .sql(
                     String.format(
                         "SELECT id FROM %s WHERE NOT lance_match(body, 'hello')", fullTable))
                 .collect(),
-        "Expected AnalysisException for NOT(lance_match(...))");
+        "Expected IllegalArgumentException for NOT(lance_match(...))");
   }
 
   // ── Scenario: planning-time rejection: FTS + nearest ────────────────────
@@ -372,10 +371,10 @@ public abstract class BaseFtsMatchPushdownTest {
         .createOrReplaceTempView("fts_nearest_test");
 
     assertThrows(
-        AnalysisException.class,
+        IllegalArgumentException.class,
         () ->
             spark.sql("SELECT id FROM fts_nearest_test WHERE lance_match(body, 'hello')").collect(),
-        "Expected AnalysisException for FTS + nearest in the same query");
+        "Expected IllegalArgumentException for FTS + nearest in the same query");
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────
