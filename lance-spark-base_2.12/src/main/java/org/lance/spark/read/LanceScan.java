@@ -16,6 +16,7 @@ package org.lance.spark.read;
 import org.lance.index.scalar.ZoneStats;
 import org.lance.ipc.ColumnOrdering;
 import org.lance.spark.LanceSparkReadOptions;
+import org.lance.spark.read.metric.LanceCustomMetrics;
 import org.lance.spark.utils.FullTextQueryUtils;
 import org.lance.spark.utils.Optional;
 import org.lance.spark.utils.QueryUtils;
@@ -27,6 +28,7 @@ import org.apache.spark.sql.connector.expressions.FieldReference;
 import org.apache.spark.sql.connector.expressions.aggregate.AggregateFunc;
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation;
 import org.apache.spark.sql.connector.expressions.aggregate.CountStar;
+import org.apache.spark.sql.connector.metric.CustomMetric;
 import org.apache.spark.sql.connector.read.Batch;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReader;
@@ -424,6 +426,11 @@ public class LanceScan
   @Override
   public Statistics estimateStatistics() {
     return statistics;
+  }
+
+  @Override
+  public CustomMetric[] supportedCustomMetrics() {
+    return LanceCustomMetrics.allMetrics();
   }
 
   /**
