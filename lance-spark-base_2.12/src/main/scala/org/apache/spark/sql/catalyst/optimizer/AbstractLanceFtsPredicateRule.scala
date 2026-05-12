@@ -93,7 +93,7 @@ abstract class AbstractLanceFtsPredicateRule extends Rule[LogicalPlan] {
         val ftsJson = FullTextQueryUtils.fullTextQueryToString(ftsQuery)
 
         val newOptionsMap = new HashMap[String, String](rel.options.asCaseSensitiveMap())
-        newOptionsMap.put("fullTextQuery", ftsJson)
+        newOptionsMap.put(LanceSparkReadOptions.CONFIG_FULL_TEXT_QUERY, ftsJson)
         val newOptions = new CaseInsensitiveStringMap(newOptionsMap)
 
         val newRel = rewriteRelation(rel, newOptions)
@@ -200,68 +200,48 @@ abstract class AbstractLanceFtsPredicateRule extends Rule[LogicalPlan] {
             "(e.g. 'fuzziness=1,operator=AND')")
     }
 
+    val optionPairs = parseKeyValueOptions(optsStr, "lance_match", knownMatchOptionKeys)
+
     var boost: Float = 1.0f
     var fuzziness: Option[Int] = None
     var maxExpansions: Int = 50
     var operator: Operator = Operator.OR
     var prefixLength: Int = 0
 
-    for (part <- optsStr.split(",")) {
-      val trimmed = part.trim
-      if (trimmed.nonEmpty) {
-        val eqIdx = trimmed.indexOf('=')
-        if (eqIdx < 0) {
-          throw new IllegalArgumentException(
-            s"lance_match: malformed option '$trimmed' — expected 'key=value'")
-        }
-        val key = trimmed.substring(0, eqIdx).trim.toLowerCase(Locale.ROOT)
-        val value = trimmed.substring(eqIdx + 1).trim
-        if (!knownMatchOptionKeys.contains(key)) {
-          throw new IllegalArgumentException(
-            s"lance_match: unknown option key '$key'. " +
-              s"Supported keys: ${knownMatchOptionKeys.mkString(", ")}")
-        }
-        key match {
-          case "fuzziness" =>
-            val v = parseNonNegativeInt(value, "fuzziness")
-            fuzziness = Some(v)
-          case "operator" =>
-            operator = value.toUpperCase(Locale.ROOT) match {
-              case "AND" => Operator.AND
-              case "OR" => Operator.OR
-              case _ =>
-                throw new IllegalArgumentException(
-                  s"lance_match: operator must be AND or OR, got '$value'")
-            }
-          case "boost" =>
-            try {
-              boost = value.toFloat
-            } catch {
+    for ((key, value) <- optionPairs) {
+      key match {
+        case "fuzziness" =>
+          fuzziness = Some(parseNonNegativeInt(value, "fuzziness"))
+        case "operator" =>
+          operator = parseOperator(value, "lance_match")
+        case "boost" =>
+          try {
+            boost = value.toFloat
+          } catch {
+            case _: NumberFormatException =>
+              throw new IllegalArgumentException(
+                s"lance_match: boost must be a number, got '$value'")
+          }
+        case "prefix_length" =>
+          prefixLength = parseNonNegativeInt(value, "prefix_length")
+        case "max_expansions" =>
+          val parsed =
+            try { value.toInt }
+            catch {
               case _: NumberFormatException =>
                 throw new IllegalArgumentException(
-                  s"lance_match: boost must be a number, got '$value'")
+                  s"lance_match: max_expansions must be an integer >= 1, got '$value'")
             }
-          case "prefix_length" =>
-            prefixLength = parseNonNegativeInt(value, "prefix_length")
-          case "max_expansions" =>
-            val v =
-              try { value.toInt }
-              catch {
-                case _: NumberFormatException =>
-                  throw new IllegalArgumentException(
-                    s"lance_match: max_expansions must be an integer >= 1, got '$value'")
-              }
-            if (v < 1) {
-              throw new IllegalArgumentException(
-                s"lance_match: max_expansions must be >= 1, got $v")
-            }
-            maxExpansions = v
-        }
+          if (parsed < 1) {
+            throw new IllegalArgumentException(
+              s"lance_match: max_expansions must be >= 1, got $parsed")
+          }
+          maxExpansions = parsed
       }
     }
 
     val javaFuzziness: Optional[Integer] = fuzziness match {
-      case Some(v) => Optional.of(v.asInstanceOf[Integer])
+      case Some(fuzz) => Optional.of(fuzz.asInstanceOf[Integer])
       case None => Optional.empty()
     }
 
@@ -277,12 +257,12 @@ abstract class AbstractLanceFtsPredicateRule extends Rule[LogicalPlan] {
 
   private def parseNonNegativeInt(value: String, key: String): Int = {
     try {
-      val v = value.toInt
-      if (v < 0) {
+      val parsed = value.toInt
+      if (parsed < 0) {
         throw new IllegalArgumentException(
-          s"lance_match: $key must be a non-negative integer, got $v")
+          s"lance_match: $key must be a non-negative integer, got $parsed")
       }
-      v
+      parsed
     } catch {
       case e: IllegalArgumentException => throw e
       case _: NumberFormatException =>
@@ -317,9 +297,9 @@ abstract class AbstractLanceFtsPredicateRule extends Rule[LogicalPlan] {
   private def buildMultiMatchQuery(args: Seq[Expression]): FullTextQuery = {
     val queryText = extractQueryText(args(0), "lance_multi_match")
 
-    // Detect optional options string at position 1: a string literal whose content contains '='
-    // and whose first key token is a recognized option key. Column names cannot start with
-    // "operator=" so there is no ambiguity in practice.
+    // Detect optional options string at position 1: a string literal whose content contains '='.
+    // Column references resolve as AttributeReference (not Literal), so a Literal containing '='
+    // is unambiguously an options string in practice.
     val (operator, colStartIdx) = args(1) match {
       case Literal(v, _) if v != null && isMultiMatchOptions(v.toString) =>
         (parseMultiMatchOptions(v.toString), 2)
@@ -347,35 +327,53 @@ abstract class AbstractLanceFtsPredicateRule extends Rule[LogicalPlan] {
   private def isMultiMatchOptions(s: String): Boolean = s.indexOf('=') >= 0
 
   private def parseMultiMatchOptions(optsStr: String): Operator = {
+    val optionPairs = parseKeyValueOptions(optsStr, "lance_multi_match", knownMultiMatchOptionKeys)
     var operator: Operator = Operator.OR
-    for (part <- optsStr.split(",")) {
-      val trimmed = part.trim
-      if (trimmed.nonEmpty) {
-        val eqIdx = trimmed.indexOf('=')
-        if (eqIdx < 0) {
-          throw new IllegalArgumentException(
-            s"lance_multi_match: malformed option '$trimmed' — expected 'key=value'")
-        }
-        val key = trimmed.substring(0, eqIdx).trim.toLowerCase(Locale.ROOT)
-        val value = trimmed.substring(eqIdx + 1).trim
-        if (!knownMultiMatchOptionKeys.contains(key)) {
-          throw new IllegalArgumentException(
-            s"lance_multi_match: unknown option key '$key'. " +
-              s"Supported keys: ${knownMultiMatchOptionKeys.mkString(", ")}")
-        }
-        key match {
-          case "operator" =>
-            operator = value.toUpperCase(Locale.ROOT) match {
-              case "AND" => Operator.AND
-              case "OR" => Operator.OR
-              case _ =>
-                throw new IllegalArgumentException(
-                  s"lance_multi_match: operator must be AND or OR, got '$value'")
-            }
-        }
+    for ((key, value) <- optionPairs) {
+      key match {
+        case "operator" =>
+          operator = parseOperator(value, "lance_multi_match")
       }
     }
     operator
+  }
+
+  /**
+   * Parses a comma-separated 'key=value' options string into a sequence of (key, value) pairs.
+   * Validates that each entry has the 'key=value' form and that the key is in the allowed set.
+   */
+  private def parseKeyValueOptions(
+      optsStr: String,
+      fnName: String,
+      allowedKeys: Set[String]): Seq[(String, String)] = {
+    optsStr.split(",").toSeq
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map { entry =>
+        val eqIdx = entry.indexOf('=')
+        if (eqIdx < 0) {
+          throw new IllegalArgumentException(
+            s"$fnName: malformed option '$entry' — expected 'key=value'")
+        }
+        val key = entry.substring(0, eqIdx).trim.toLowerCase(Locale.ROOT)
+        val value = entry.substring(eqIdx + 1).trim
+        if (!allowedKeys.contains(key)) {
+          throw new IllegalArgumentException(
+            s"$fnName: unknown option key '$key'. " +
+              s"Supported keys: ${allowedKeys.mkString(", ")}")
+        }
+        (key, value)
+      }
+  }
+
+  private def parseOperator(value: String, fnName: String): Operator = {
+    value.toUpperCase(Locale.ROOT) match {
+      case "AND" => Operator.AND
+      case "OR" => Operator.OR
+      case _ =>
+        throw new IllegalArgumentException(
+          s"$fnName: operator must be AND or OR, got '$value'")
+    }
   }
 
   private def extractColumn(expr: Expression, fnName: String): String = expr match {

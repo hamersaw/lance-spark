@@ -104,8 +104,8 @@ public final class FullTextQueryUtils {
             }
             if (mmq.getBoosts().isPresent()) {
               ArrayNode boostsArr = node.putArray(FIELD_BOOSTS);
-              for (Float b : mmq.getBoosts().get()) {
-                boostsArr.add(b);
+              for (Float boost : mmq.getBoosts().get()) {
+                boostsArr.add(boost);
               }
             }
             node.put(FIELD_OPERATOR, mmq.getOperator().name());
@@ -167,15 +167,15 @@ public final class FullTextQueryUtils {
             String queryText = node.get(FIELD_QUERY_TEXT).asText();
             ArrayNode colsNode = (ArrayNode) node.get(FIELD_COLUMNS);
             List<String> columns = new ArrayList<>();
-            for (JsonNode c : colsNode) {
-              columns.add(c.asText());
+            for (JsonNode colNode : colsNode) {
+              columns.add(colNode.asText());
             }
             Operator operator = Operator.valueOf(node.get(FIELD_OPERATOR).asText());
             if (node.has(FIELD_BOOSTS) && !node.get(FIELD_BOOSTS).isNull()) {
               ArrayNode boostsNode = (ArrayNode) node.get(FIELD_BOOSTS);
               List<Float> boosts = new ArrayList<>();
-              for (JsonNode b : boostsNode) {
-                boosts.add((float) b.asDouble());
+              for (JsonNode boostNode : boostsNode) {
+                boosts.add((float) boostNode.asDouble());
               }
               return FullTextQuery.multiMatch(queryText, columns, boosts, operator);
             } else {
@@ -217,32 +217,32 @@ public final class FullTextQueryUtils {
     switch (a.getType()) {
       case MATCH:
         {
-          MatchQuery ma = (MatchQuery) a;
-          MatchQuery mb = (MatchQuery) b;
-          return Objects.equals(ma.getQueryText(), mb.getQueryText())
-              && Objects.equals(ma.getColumn(), mb.getColumn())
-              && Float.compare(ma.getBoost(), mb.getBoost()) == 0
-              && Objects.equals(ma.getFuzziness(), mb.getFuzziness())
-              && ma.getMaxExpansions() == mb.getMaxExpansions()
-              && ma.getOperator() == mb.getOperator()
-              && ma.getPrefixLength() == mb.getPrefixLength();
+          MatchQuery matchA = (MatchQuery) a;
+          MatchQuery matchB = (MatchQuery) b;
+          return Objects.equals(matchA.getQueryText(), matchB.getQueryText())
+              && Objects.equals(matchA.getColumn(), matchB.getColumn())
+              && Float.compare(matchA.getBoost(), matchB.getBoost()) == 0
+              && Objects.equals(matchA.getFuzziness(), matchB.getFuzziness())
+              && matchA.getMaxExpansions() == matchB.getMaxExpansions()
+              && matchA.getOperator() == matchB.getOperator()
+              && matchA.getPrefixLength() == matchB.getPrefixLength();
         }
       case MATCH_PHRASE:
         {
-          PhraseQuery pa = (PhraseQuery) a;
-          PhraseQuery pb = (PhraseQuery) b;
-          return Objects.equals(pa.getQueryText(), pb.getQueryText())
-              && Objects.equals(pa.getColumn(), pb.getColumn())
-              && pa.getSlop() == pb.getSlop();
+          PhraseQuery phraseA = (PhraseQuery) a;
+          PhraseQuery phraseB = (PhraseQuery) b;
+          return Objects.equals(phraseA.getQueryText(), phraseB.getQueryText())
+              && Objects.equals(phraseA.getColumn(), phraseB.getColumn())
+              && phraseA.getSlop() == phraseB.getSlop();
         }
       case MULTI_MATCH:
         {
-          MultiMatchQuery ma = (MultiMatchQuery) a;
-          MultiMatchQuery mb = (MultiMatchQuery) b;
-          return Objects.equals(ma.getQueryText(), mb.getQueryText())
-              && Objects.equals(ma.getColumns(), mb.getColumns())
-              && ma.getOperator() == mb.getOperator()
-              && equalsBoostLists(ma.getBoosts(), mb.getBoosts());
+          MultiMatchQuery multiA = (MultiMatchQuery) a;
+          MultiMatchQuery multiB = (MultiMatchQuery) b;
+          return Objects.equals(multiA.getQueryText(), multiB.getQueryText())
+              && Objects.equals(multiA.getColumns(), multiB.getColumns())
+              && multiA.getOperator() == multiB.getOperator()
+              && equalsBoostLists(multiA.getBoosts(), multiB.getBoosts());
         }
       default:
         throw new IllegalArgumentException(
@@ -250,20 +250,21 @@ public final class FullTextQueryUtils {
     }
   }
 
-  private static boolean equalsBoostLists(Optional<List<Float>> a, Optional<List<Float>> b) {
-    if (!a.isPresent() && !b.isPresent()) {
+  private static boolean equalsBoostLists(
+      Optional<List<Float>> boostsA, Optional<List<Float>> boostsB) {
+    if (!boostsA.isPresent() && !boostsB.isPresent()) {
       return true;
     }
-    if (!a.isPresent() || !b.isPresent()) {
+    if (!boostsA.isPresent() || !boostsB.isPresent()) {
       return false;
     }
-    List<Float> la = a.get();
-    List<Float> lb = b.get();
-    if (la.size() != lb.size()) {
+    List<Float> listA = boostsA.get();
+    List<Float> listB = boostsB.get();
+    if (listA.size() != listB.size()) {
       return false;
     }
-    for (int i = 0; i < la.size(); i++) {
-      if (Float.compare(la.get(i), lb.get(i)) != 0) {
+    for (int i = 0; i < listA.size(); i++) {
+      if (Float.compare(listA.get(i), listB.get(i)) != 0) {
         return false;
       }
     }

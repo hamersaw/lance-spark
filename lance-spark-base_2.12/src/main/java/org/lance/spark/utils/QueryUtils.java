@@ -108,8 +108,8 @@ public class QueryUtils {
         gen.writeFieldName("key");
         float[] key = value.getKey();
         gen.writeStartArray();
-        for (float f : key) {
-          gen.writeNumber(f);
+        for (float element : key) {
+          gen.writeNumber(element);
         }
         gen.writeEndArray();
       }
