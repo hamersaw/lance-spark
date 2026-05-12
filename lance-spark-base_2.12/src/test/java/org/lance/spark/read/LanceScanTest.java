@@ -272,22 +272,15 @@ public class LanceScanTest {
             .nearest(qb.build())
             .build();
     LanceScan scan =
-        new LanceScan(
-            TEST_SCHEMA,
-            opts,
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            new Filter[0],
-            null,
-            Collections.emptyMap(),
-            null,
-            null,
-            Collections.emptyMap(),
-            null,
-            Collections.emptyMap());
+        (LanceScan)
+            new LanceScanBuilder(
+                    TEST_SCHEMA,
+                    opts,
+                    Collections.emptyMap(),
+                    null,
+                    Collections.emptyMap(),
+                    Collections.emptyMap())
+                .build();
     Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
     assertTrue(
         meta.containsKey("nearest"), "nearest key must be present when getNearest() != null");
@@ -311,22 +304,15 @@ public class LanceScanTest {
             .fullTextQuery(FullTextQuery.match("hello world", "body"))
             .build();
     LanceScan scan =
-        new LanceScan(
-            TEST_SCHEMA,
-            opts,
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            org.lance.spark.utils.Optional.empty(),
-            new Filter[0],
-            null,
-            Collections.emptyMap(),
-            null,
-            null,
-            Collections.emptyMap(),
-            null,
-            Collections.emptyMap());
+        (LanceScan)
+            new LanceScanBuilder(
+                    TEST_SCHEMA,
+                    opts,
+                    Collections.emptyMap(),
+                    null,
+                    Collections.emptyMap(),
+                    Collections.emptyMap())
+                .build();
     Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
     assertTrue(
         meta.containsKey("fullTextQuery"),
