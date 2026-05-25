@@ -269,12 +269,7 @@ public class LanceScanTest {
     LanceScan scan =
         (LanceScan)
             new LanceScanBuilder(
-                    TEST_SCHEMA,
-                    opts,
-                    Collections.emptyMap(),
-                    null,
-                    Collections.emptyMap(),
-                    null)
+                    TEST_SCHEMA, opts, Collections.emptyMap(), null, Collections.emptyMap(), null)
                 .build();
     Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
     assertTrue(
@@ -301,12 +296,7 @@ public class LanceScanTest {
     LanceScan scan =
         (LanceScan)
             new LanceScanBuilder(
-                    TEST_SCHEMA,
-                    opts,
-                    Collections.emptyMap(),
-                    null,
-                    Collections.emptyMap(),
-                    null)
+                    TEST_SCHEMA, opts, Collections.emptyMap(), null, Collections.emptyMap(), null)
                 .build();
     Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
     assertTrue(
