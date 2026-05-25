@@ -21,6 +21,6 @@ public class LanceSparkDataSource extends LanceDataSource {
   @Override
   public LanceDataset createDataset(LanceSparkReadOptions readOptions, StructType sparkSchema) {
     return new LancePositionDeltaDataset(
-        readOptions, sparkSchema, null, null, null, false, null, Collections.emptyMap());
+        readOptions, sparkSchema, null, null, null, false, null, Collections.emptyMap(), null);
   }
 }

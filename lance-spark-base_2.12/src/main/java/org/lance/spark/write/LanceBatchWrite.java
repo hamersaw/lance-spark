@@ -17,12 +17,14 @@ import org.lance.CommitBuilder;
 import org.lance.Dataset;
 import org.lance.FragmentMetadata;
 import org.lance.Transaction;
+import org.lance.memwal.ShardingSpec;
 import org.lance.namespace.LanceNamespace;
 import org.lance.operation.Append;
 import org.lance.operation.Operation;
 import org.lance.operation.Overwrite;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkWriteOptions;
+import org.lance.spark.utils.BlobSourceContext;
 import org.lance.spark.utils.Utils;
 
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -36,7 +38,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -64,11 +65,14 @@ public class LanceBatchWrite implements BatchWrite {
 
   private final StagedCommit stagedCommit;
 
+  /** Sharding spec controlling how data is distributed across fragments. */
+  private final ShardingSpec shardingSpec;
+
   /**
-   * Partition column names — fragments will be rolled at transitions so each fragment contains
-   * exactly one partition value. Empty when no partitioning is requested.
+   * Per-source blob credential/open contexts keyed by source dataset URI, captured on the driver
+   * and passed to write tasks so they can reopen source datasets to resolve blob references.
    */
-  private final List<String> partitionColumns;
+  private final Map<String, BlobSourceContext> blobSourceContexts;
 
   public LanceBatchWrite(
       StructType schema,
@@ -90,7 +94,8 @@ public class LanceBatchWrite implements BatchWrite {
         tableId,
         managedVersioning,
         stagedCommit,
-        Collections.emptyList());
+        null,
+        java.util.Collections.emptyMap());
   }
 
   public LanceBatchWrite(
@@ -103,7 +108,8 @@ public class LanceBatchWrite implements BatchWrite {
       List<String> tableId,
       boolean managedVersioning,
       StagedCommit stagedCommit,
-      List<String> partitionColumns) {
+      ShardingSpec shardingSpec,
+      Map<String, BlobSourceContext> blobSourceContexts) {
     this.schema = schema;
     this.overwrite = overwrite;
     this.initialStorageOptions = initialStorageOptions;
@@ -112,7 +118,9 @@ public class LanceBatchWrite implements BatchWrite {
     this.tableId = tableId;
     this.managedVersioning = managedVersioning;
     this.stagedCommit = stagedCommit;
-    this.partitionColumns = partitionColumns == null ? Collections.emptyList() : partitionColumns;
+    this.shardingSpec = shardingSpec;
+    this.blobSourceContexts =
+        blobSourceContexts == null ? java.util.Collections.emptyMap() : blobSourceContexts;
 
     // For staged operations, the dataset is managed by StagedCommit.
     // For non-staged operations, pin the dataset version for OCC.
@@ -136,7 +144,8 @@ public class LanceBatchWrite implements BatchWrite {
         namespaceImpl,
         namespaceProperties,
         tableId,
-        partitionColumns);
+        shardingSpec,
+        blobSourceContexts);
   }
 
   @Override
@@ -150,6 +159,7 @@ public class LanceBatchWrite implements BatchWrite {
         Arrays.stream(messages)
             .map(m -> (TaskCommit) m)
             .map(TaskCommit::getFragments)
+            .map(LanceDataWriter::stripRowIdMeta)
             .flatMap(List::stream)
             .collect(Collectors.toList());
 
@@ -193,7 +203,10 @@ public class LanceBatchWrite implements BatchWrite {
         if (managedVersioning) {
           LanceNamespace namespace =
               LanceRuntime.getOrCreateNamespace(namespaceImpl, namespaceProperties);
-          commitBuilder.namespaceClient(namespace).tableId(tableId);
+          commitBuilder
+              .namespaceClient(namespace)
+              .tableId(tableId)
+              .namespaceClientManagedVersioning(true);
         }
         try (Transaction txn =
                 new Transaction.Builder().readVersion(version).operation(operation).build();

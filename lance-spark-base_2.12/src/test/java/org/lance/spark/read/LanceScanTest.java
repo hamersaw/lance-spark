@@ -21,18 +21,18 @@ import org.lance.spark.TestUtils;
 
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.expressions.Expression;
+import org.apache.spark.sql.connector.expressions.Expressions;
 import org.apache.spark.sql.connector.expressions.FieldReference;
 import org.apache.spark.sql.connector.expressions.aggregate.AggregateFunc;
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation;
 import org.apache.spark.sql.connector.expressions.aggregate.CountStar;
+import org.apache.spark.sql.connector.expressions.filter.Predicate;
 import org.apache.spark.sql.connector.read.HasPartitionKey;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.connector.read.partitioning.KeyGroupedPartitioning;
 import org.apache.spark.sql.connector.read.partitioning.Partitioning;
 import org.apache.spark.sql.connector.read.partitioning.UnknownPartitioning;
-import org.apache.spark.sql.sources.Filter;
-import org.apache.spark.sql.sources.GreaterThan;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.Test;
@@ -55,7 +55,6 @@ public class LanceScanTest {
                 TestUtils.TestTable1Config.readOptions,
                 Collections.emptyMap(),
                 null,
-                Collections.emptyMap(),
                 Collections.emptyMap())
             .build();
   }
@@ -73,9 +72,8 @@ public class LanceScanTest {
             TestUtils.TestTable1Config.readOptions,
             Collections.emptyMap(),
             null,
-            Collections.emptyMap(),
             Collections.emptyMap());
-    builder.pushFilters(new Filter[] {new GreaterThan("x", 0L)});
+    builder.pushPredicates(new Predicate[] {TestPredicates.gt("x", 0L)});
     builder.pushAggregation(
         new Aggregation(new AggregateFunc[] {new CountStar()}, new Expression[] {}));
     // With filters, COUNT(*) falls back to scanner-based (returns LanceScan, not LanceLocalScan)
@@ -104,9 +102,8 @@ public class LanceScanTest {
             TestUtils.TestTable1Config.readOptions,
             Collections.emptyMap(),
             null,
-            Collections.emptyMap(),
             Collections.emptyMap());
-    builder.pushFilters(new Filter[] {new GreaterThan("x", 0L)});
+    builder.pushPredicates(new Predicate[] {TestPredicates.gt("x", 0L)});
     LanceScan scan = (LanceScan) builder.build();
     LanceInputPartition partition = (LanceInputPartition) scan.planInputPartitions()[0];
     assertTrue(partition.getWhereCondition().isPresent());
@@ -120,7 +117,6 @@ public class LanceScanTest {
             TestUtils.TestTable1Config.readOptions,
             Collections.emptyMap(),
             null,
-            Collections.emptyMap(),
             Collections.emptyMap());
     builder.pushLimit(2);
     LanceScan scan = (LanceScan) builder.build();
@@ -137,7 +133,6 @@ public class LanceScanTest {
             TestUtils.TestTable1Config.readOptions,
             Collections.emptyMap(),
             null,
-            Collections.emptyMap(),
             Collections.emptyMap());
     builder.pushLimit(1);
     LanceScan scan = (LanceScan) builder.build();
@@ -200,11 +195,10 @@ public class LanceScanTest {
   @Test
   public void testOutputPartitioningWithPartitionInfo() {
     // Create a LanceScan with partition info
-    Map<Integer, Comparable<?>> fragValues = new HashMap<>();
-    fragValues.put(0, "east");
-    fragValues.put(1, "west");
-    ZonemapFragmentPruner.PartitionInfo partInfo =
-        new ZonemapFragmentPruner.PartitionInfo("region", fragValues);
+    Map<Integer, Object> fragKeys = new HashMap<>();
+    fragKeys.put(0, "east");
+    fragKeys.put(1, "west");
+    Expression partitionExpression = Expressions.column("region");
 
     LanceScan scan =
         new LanceScan(
@@ -215,11 +209,12 @@ public class LanceScanTest {
             org.lance.spark.utils.Optional.empty(),
             org.lance.spark.utils.Optional.empty(),
             org.lance.spark.utils.Optional.empty(),
-            new Filter[0],
+            new Predicate[0],
             null,
             Collections.emptyMap(),
             null,
-            partInfo,
+            partitionExpression,
+            fragKeys,
             Collections.emptyMap(),
             null,
             Collections.emptyMap());
@@ -320,6 +315,39 @@ public class LanceScanTest {
     assertNotNull(meta.get("fullTextQuery"), "fullTextQuery metadata value must not be null");
   }
 
+  @Test
+  public void testOutputPartitioningWithBucketInfo() {
+    Map<Integer, Object> fragKeys = new HashMap<>();
+    fragKeys.put(0, 0);
+    fragKeys.put(1, 1);
+    fragKeys.put(2, 2);
+    Expression partitionExpression = Expressions.bucket(4, "region");
+
+    LanceScan scan =
+        new LanceScan(
+            TEST_SCHEMA,
+            TestUtils.TestTable1Config.readOptions,
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            org.lance.spark.utils.Optional.empty(),
+            new Predicate[0],
+            null,
+            Collections.emptyMap(),
+            null,
+            partitionExpression,
+            fragKeys,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap());
+
+    Partitioning partitioning = scan.outputPartitioning();
+    assertInstanceOf(KeyGroupedPartitioning.class, partitioning);
+    KeyGroupedPartitioning kgp = (KeyGroupedPartitioning) partitioning;
+    assertEquals(3, kgp.numPartitions());
+  }
+
   // --- equals / hashCode (required for ReusedExchange) ---
 
   @Test
@@ -346,9 +374,8 @@ public class LanceScanTest {
             TestUtils.TestTable1Config.readOptions,
             Collections.emptyMap(),
             null,
-            Collections.emptyMap(),
             Collections.emptyMap());
-    builder2.pushFilters(new Filter[] {new GreaterThan("x", 0L)});
+    builder2.pushPredicates(new Predicate[] {TestPredicates.gt("x", 0L)});
     LanceScan scan2 = (LanceScan) builder2.build();
 
     assertNotEquals(scan1, scan2, "Scans with different filters should not be equal");
@@ -366,7 +393,6 @@ public class LanceScanTest {
                     TestUtils.TestTable1Config.readOptions,
                     Collections.emptyMap(),
                     null,
-                    Collections.emptyMap(),
                     Collections.emptyMap())
                 .build();
 

@@ -13,7 +13,9 @@
  */
 package org.lance.spark;
 
+import org.lance.memwal.ShardingSpec;
 import org.lance.spark.read.LanceScanBuilder;
+import org.lance.spark.utils.BlobSourceContext;
 import org.lance.spark.utils.BlobUtils;
 import org.lance.spark.write.AddColumnsBackfillWrite;
 import org.lance.spark.write.SparkWrite;
@@ -35,6 +37,7 @@ import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
+import org.apache.spark.sql.util.LanceSerializeUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -173,6 +176,9 @@ public class LanceDataset
   /** Table properties from the Lance dataset config, exposed via {@link #properties()}. */
   private final Map<String, String> tableProperties;
 
+  /** In-memory sharding spec for newly staged tables before MemWAL metadata can be read. */
+  private final ShardingSpec shardingSpec;
+
   /**
    * Creates a Lance dataset.
    *
@@ -201,7 +207,8 @@ public class LanceDataset
         managedVersioning,
         null,
         fileFormatVersion,
-        Collections.emptyMap());
+        Collections.emptyMap(),
+        null);
   }
 
   /**
@@ -216,6 +223,7 @@ public class LanceDataset
    * @param stagedCommit the eagerly created staged commit, or null for non-staged tables
    * @param fileFormatVersion the file format version for writes, or null to use default
    * @param tableProperties table properties from Lance dataset config
+   * @param shardingSpec in-memory sharding spec for newly staged tables
    */
   public LanceDataset(
       LanceSparkReadOptions readOptions,
@@ -226,7 +234,8 @@ public class LanceDataset
       boolean managedVersioning,
       StagedCommit stagedCommit,
       String fileFormatVersion,
-      Map<String, String> tableProperties) {
+      Map<String, String> tableProperties,
+      ShardingSpec shardingSpec) {
     this.readOptions = readOptions;
     this.sparkSchema = sparkSchema;
     this.initialStorageOptions = initialStorageOptions;
@@ -236,6 +245,7 @@ public class LanceDataset
     this.stagedCommit = stagedCommit;
     this.fileFormatVersion = fileFormatVersion;
     this.tableProperties = Collections.unmodifiableMap(new HashMap<>(tableProperties));
+    this.shardingSpec = shardingSpec;
   }
 
   public LanceSparkReadOptions readOptions() {
@@ -283,7 +293,7 @@ public class LanceDataset
         initialStorageOptions,
         namespaceImpl,
         namespaceProperties,
-        tableProperties);
+        shardingSpec);
   }
 
   @Override
@@ -315,8 +325,11 @@ public class LanceDataset
   public WriteBuilder newWriteBuilder(LogicalWriteInfo logicalWriteInfo) {
     // Merge write-time options with the base options from read options
     CaseInsensitiveStringMap sparkWriteOptions = logicalWriteInfo.options();
+    Map<String, BlobSourceContext> blobSourceContexts = decodeBlobSourceContexts(sparkWriteOptions);
     Map<String, String> mergedOptions = new HashMap<>(readOptions.getStorageOptions());
     mergedOptions.putAll(sparkWriteOptions.asCaseSensitiveMap());
+    // Internal-only option (see LanceBlobSourceContextRule); never forward it as a storage option.
+    mergedOptions.remove(LanceConstant.BLOB_SOURCE_CONTEXTS_KEY);
 
     LanceSparkWriteOptions.Builder writeOptionsBuilder =
         LanceSparkWriteOptions.builder()
@@ -328,6 +341,12 @@ public class LanceDataset
     if (!mergedOptions.containsKey(LanceSparkWriteOptions.CONFIG_FILE_FORMAT_VERSION)
         && fileFormatVersion != null) {
       writeOptionsBuilder.fileFormatVersion(fileFormatVersion);
+    }
+    if (!mergedOptions.containsKey(LanceSparkWriteOptions.CONFIG_ENABLE_STABLE_ROW_IDS)
+        && tableProperties.containsKey(LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS)) {
+      writeOptionsBuilder.enableStableRowIds(
+          Boolean.parseBoolean(
+              tableProperties.get(LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS)));
     }
     LanceSparkWriteOptions writeOptions = writeOptionsBuilder.build();
 
@@ -374,7 +393,8 @@ public class LanceDataset
             namespaceProperties,
             readOptions.getTableId(),
             managedVersioning,
-            tableProperties);
+            shardingSpec,
+            blobSourceContexts);
 
     if (stagedCommit != null) {
       builder.setStagedCommit(stagedCommit);
@@ -384,6 +404,21 @@ public class LanceDataset
       builder.truncate();
     }
     return builder;
+  }
+
+  /**
+   * Decodes the blob source contexts that {@code LanceBlobSourceContextRule} injected into the
+   * write options for an INSERT whose query reads blob columns. Returns an empty map when absent
+   * (e.g. no blob sources, or the SQL extension is not enabled).
+   */
+  @SuppressWarnings("unchecked")
+  private static Map<String, BlobSourceContext> decodeBlobSourceContexts(
+      CaseInsensitiveStringMap writeOptions) {
+    String encoded = writeOptions.get(LanceConstant.BLOB_SOURCE_CONTEXTS_KEY);
+    if (encoded == null || encoded.isEmpty()) {
+      return Collections.emptyMap();
+    }
+    return (Map<String, BlobSourceContext>) LanceSerializeUtil.decode(encoded);
   }
 
   @Override

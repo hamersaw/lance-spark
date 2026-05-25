@@ -13,9 +13,12 @@
  */
 package org.lance.spark;
 
+import org.lance.CommitBuilder;
 import org.lance.Dataset;
+import org.lance.Transaction;
 import org.lance.WriteDatasetBuilder;
 import org.lance.WriteParams;
+import org.lance.memwal.ShardingSpec;
 import org.lance.namespace.LanceNamespace;
 import org.lance.namespace.errors.ErrorCode;
 import org.lance.namespace.errors.LanceNamespaceException;
@@ -30,10 +33,14 @@ import org.lance.namespace.model.DropTableRequest;
 import org.lance.namespace.model.ListTablesRequest;
 import org.lance.namespace.model.ListTablesResponse;
 import org.lance.namespace.model.RenameTableRequest;
+import org.lance.operation.UpdateConfig;
+import org.lance.operation.UpdateMap;
+import org.lance.spark.function.LanceBucketFunction;
 import org.lance.spark.function.LanceFragmentIdWithDefaultFunction;
 import org.lance.spark.function.LanceMatchFunction;
 import org.lance.spark.function.LanceMultiMatchFunction;
 import org.lance.spark.function.LancePhraseFunction;
+import org.lance.spark.sharding.SparkLanceShardingUtils;
 import org.lance.spark.utils.Optional;
 import org.lance.spark.utils.SchemaConverter;
 import org.lance.spark.utils.Utils;
@@ -53,6 +60,7 @@ import org.apache.spark.sql.connector.catalog.StagedTable;
 import org.apache.spark.sql.connector.catalog.StagingTableCatalog;
 import org.apache.spark.sql.connector.catalog.SupportsNamespaces;
 import org.apache.spark.sql.connector.catalog.Table;
+import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.connector.catalog.TableChange;
 import org.apache.spark.sql.connector.catalog.functions.UnboundFunction;
 import org.apache.spark.sql.connector.expressions.Transform;
@@ -81,6 +89,17 @@ public abstract class BaseLanceNamespaceSparkCatalog
 
   private static final Logger logger =
       LoggerFactory.getLogger(BaseLanceNamespaceSparkCatalog.class);
+
+  private static final Set<String> SPARK_RESERVED_TABLE_PROPERTIES =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  TableCatalog.PROP_COMMENT,
+                  TableCatalog.PROP_EXTERNAL,
+                  TableCatalog.PROP_IS_MANAGED_LOCATION,
+                  TableCatalog.PROP_LOCATION,
+                  TableCatalog.PROP_OWNER,
+                  TableCatalog.PROP_PROVIDER)));
 
   /**
    * Used to specify the namespace implementation to use. Optional when using path-based access
@@ -289,7 +308,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
       Identifier.of(targetNamespace, LanceFragmentIdWithDefaultFunction.NAME),
       Identifier.of(targetNamespace, LanceMatchFunction.NAME),
       Identifier.of(targetNamespace, LancePhraseFunction.NAME),
-      Identifier.of(targetNamespace, LanceMultiMatchFunction.NAME)
+      Identifier.of(targetNamespace, LanceMultiMatchFunction.NAME),
+      Identifier.of(targetNamespace, LanceBucketFunction.NAME)
     };
   }
 
@@ -309,6 +329,9 @@ public abstract class BaseLanceNamespaceSparkCatalog
     }
     if (LanceMultiMatchFunction.NAME.equalsIgnoreCase(ident.name())) {
       return new LanceMultiMatchFunction();
+    }
+    if (LanceBucketFunction.NAME.equalsIgnoreCase(ident.name())) {
+      return new LanceBucketFunction();
     }
     throw new NoSuchFunctionException(ident);
   }
@@ -573,9 +596,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws TableAlreadyExistsException, NoSuchNamespaceException {
 
+    ShardingSpec shardingSpec = SparkLanceShardingUtils.fromSparkTransforms(partitions);
+
     // Handle path-based access
     if (isPathBasedIdentifier(ident)) {
-      return createTableAtPath(ident, schema, properties);
+      return createTableAtPath(ident, schema, properties, shardingSpec);
     }
 
     // Require namespace to be configured for namespace-based access
@@ -607,16 +632,27 @@ public abstract class BaseLanceNamespaceSparkCatalog
     if (fileFormatVersion != null) {
       writeBuilder.dataStorageVersion(fileFormatVersion);
     }
-    try (Dataset dataset = writeBuilder.execute()) {
-      location = dataset.uri();
-    }
-
     // Call describeTable to get initial storage options for Spark dataset wrapper
     DescribeTableRequest describeRequest = new DescribeTableRequest();
     tableIdList.forEach(describeRequest::addIdItem);
-    DescribeTableResponse describeResponse = namespace.describeTable(describeRequest);
-    Map<String, String> initialStorageOptions = describeResponse.getStorageOptions();
-    boolean managedVersioning = Boolean.TRUE.equals(describeResponse.getManagedVersioning());
+    DescribeTableResponse describeResponse;
+    Map<String, String> initialStorageOptions;
+    boolean managedVersioning;
+    Map<String, String> tableProperties = copyUserTableProperties(properties);
+    try (Dataset dataset = writeBuilder.execute()) {
+      location = dataset.uri();
+      describeResponse = namespace.describeTable(describeRequest);
+      initialStorageOptions = describeResponse.getStorageOptions();
+      managedVersioning = Boolean.TRUE.equals(describeResponse.getManagedVersioning());
+      SparkLanceShardingUtils.initializeMemWal(
+          dataset,
+          SparkLanceShardingUtils.fromSparkTransforms(partitions, dataset.getLanceSchema()));
+      Map<String, String> propertiesToPersist =
+          tablePropertiesToPersistOnCreate(properties, managedVersioning);
+      if (!propertiesToPersist.isEmpty()) {
+        persistTableProperties(dataset, propertiesToPersist, managedVersioning, tableIdList);
+      }
+    }
 
     // Create read options with namespace settings
     LanceSparkReadOptions readOptions =
@@ -635,7 +671,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
         namespaceProperties,
         managedVersioning,
         fileFormatVersion,
-        Collections.emptyMap());
+        tableProperties,
+        null);
   }
 
   /**
@@ -643,7 +680,10 @@ public abstract class BaseLanceNamespaceSparkCatalog
    * df.write.format("lance").save(path).
    */
   private Table createTableAtPath(
-      Identifier ident, StructType schema, Map<String, String> properties)
+      Identifier ident,
+      StructType schema,
+      Map<String, String> properties,
+      ShardingSpec shardingSpec)
       throws TableAlreadyExistsException {
     String datasetUri = getDatasetUri(ident);
 
@@ -653,6 +693,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
             datasetUri, catalogConfig, Optional.empty(), Optional.empty(), Optional.empty(), name);
 
     String fileFormatVersion = catalogConfig.getFileFormatVersion(properties);
+    Map<String, String> tableProperties = copyUserTableProperties(properties);
     try {
       WriteDatasetBuilder writeBuilder =
           Dataset.write()
@@ -665,7 +706,14 @@ public abstract class BaseLanceNamespaceSparkCatalog
       if (fileFormatVersion != null) {
         writeBuilder.dataStorageVersion(fileFormatVersion);
       }
-      writeBuilder.execute().close();
+      try (Dataset dataset = writeBuilder.execute()) {
+        SparkLanceShardingUtils.initializeMemWal(dataset, shardingSpec);
+        Map<String, String> propertiesToPersist =
+            tablePropertiesToPersistOnCreate(properties, false);
+        if (!propertiesToPersist.isEmpty()) {
+          persistTableProperties(dataset, propertiesToPersist, false, null);
+        }
+      }
     } catch (IllegalArgumentException e) {
       throw new TableAlreadyExistsException(ident);
     }
@@ -677,7 +725,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
         null,
         false,
         fileFormatVersion,
-        Collections.emptyMap());
+        tableProperties,
+        null);
   }
 
   @Override
@@ -700,6 +749,13 @@ public abstract class BaseLanceNamespaceSparkCatalog
       }
     }
 
+    if (propsToSet.containsKey(LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS)
+        || keysToRemove.contains(LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS)) {
+      throw new UnsupportedOperationException(
+          LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS
+              + " can only be set at table creation.");
+    }
+
     if (propsToSet.isEmpty() && keysToRemove.isEmpty()) {
       // No changes to apply, just return the current table
       return loadTable(ident);
@@ -713,7 +769,10 @@ public abstract class BaseLanceNamespaceSparkCatalog
       Map<String, String> merged = new HashMap<>(dataset.getConfig());
       merged.putAll(propsToSet);
       keysToRemove.forEach(merged::remove);
-      dataset.updateConfig(merged);
+      boolean managedVersioning =
+          resolved.describeResponse != null
+              && Boolean.TRUE.equals(resolved.describeResponse.getManagedVersioning());
+      updateDatasetConfig(dataset, merged, managedVersioning, resolved.tableIdList);
     }
 
     return loadTable(ident);
@@ -836,9 +895,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws TableAlreadyExistsException, NoSuchNamespaceException {
 
+    ShardingSpec shardingSpec = SparkLanceShardingUtils.fromSparkTransforms(partitions);
+
     // Handle path-based access
     if (isPathBasedIdentifier(ident)) {
-      return stageCreateAtPath(ident, schema, properties);
+      return stageCreateAtPath(ident, schema, properties, shardingSpec);
     }
 
     // Require namespace to be configured for namespace-based access
@@ -878,6 +939,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
             tableIdList,
             managedVersioning);
     StagedCommit stagedCommit = StagedCommit.forNewTable(arrowSchema, location, commitOptions);
+    stagedCommit.setShardingSpec(shardingSpec);
     String fileFormatVersion = catalogConfig.getFileFormatVersion(properties);
     return createStagedDataset(
         readOptions,
@@ -888,12 +950,16 @@ public abstract class BaseLanceNamespaceSparkCatalog
         managedVersioning,
         stagedCommit,
         fileFormatVersion,
-        Collections.emptyMap());
+        copyUserTableProperties(properties),
+        shardingSpec);
   }
 
   /** Stage create a table at a direct path. */
   private StagedTable stageCreateAtPath(
-      Identifier ident, StructType schema, Map<String, String> properties) {
+      Identifier ident,
+      StructType schema,
+      Map<String, String> properties,
+      ShardingSpec shardingSpec) {
     String datasetUri = getDatasetUri(ident);
     StructType processedSchema = SchemaConverter.processSchemaWithProperties(schema, properties);
 
@@ -906,6 +972,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
         StagedCommitOptions.pathBased(
             catalogConfig.getStorageOptions(), catalogConfig.isEnableStableRowIds(properties));
     StagedCommit stagedCommit = StagedCommit.forNewTable(arrowSchema, datasetUri, commitOptions);
+    stagedCommit.setShardingSpec(shardingSpec);
     String fileFormatVersion = catalogConfig.getFileFormatVersion(properties);
     return createStagedDataset(
         readOptions,
@@ -916,7 +983,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
         false,
         stagedCommit,
         fileFormatVersion,
-        Collections.emptyMap());
+        copyUserTableProperties(properties),
+        shardingSpec);
   }
 
   @Override
@@ -924,9 +992,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws NoSuchNamespaceException, NoSuchTableException {
 
+    ShardingSpec shardingSpec = SparkLanceShardingUtils.fromSparkTransforms(partitions);
+
     // Handle path-based access
     if (isPathBasedIdentifier(ident)) {
-      return stageReplaceAtPath(ident, schema, properties);
+      return stageReplaceAtPath(ident, schema, properties, shardingSpec);
     }
 
     ResolvedTable resolved = resolveIdentifier(ident);
@@ -947,6 +1017,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
             resolved.tableIdList,
             managedVersioning);
     StagedCommit stagedCommit = StagedCommit.forExistingTable(ds, arrowSchema, commitOptions);
+    stagedCommit.setShardingSpec(shardingSpec);
     // Use specified file format version, or fall back to existing table's version
     String fileFormatVersion = catalogConfig.getFileFormatVersion(properties);
     if (fileFormatVersion == null) {
@@ -961,12 +1032,16 @@ public abstract class BaseLanceNamespaceSparkCatalog
         managedVersioning,
         stagedCommit,
         fileFormatVersion,
-        Collections.emptyMap());
+        copyUserTableProperties(properties),
+        shardingSpec);
   }
 
   /** Stage replace a table at a direct path. */
   private StagedTable stageReplaceAtPath(
-      Identifier ident, StructType schema, Map<String, String> properties)
+      Identifier ident,
+      StructType schema,
+      Map<String, String> properties,
+      ShardingSpec shardingSpec)
       throws NoSuchTableException {
     String datasetUri = getDatasetUri(ident);
     StructType processedSchema = SchemaConverter.processSchemaWithProperties(schema, properties);
@@ -987,6 +1062,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
         StagedCommitOptions.pathBased(
             catalogConfig.getStorageOptions(), catalogConfig.isEnableStableRowIds(properties));
     StagedCommit stagedCommit = StagedCommit.forExistingTable(ds, arrowSchema, commitOptions);
+    stagedCommit.setShardingSpec(shardingSpec);
     // Use specified file format version, or fall back to existing table's version
     String fileFormatVersion = catalogConfig.getFileFormatVersion(properties);
     if (fileFormatVersion == null) {
@@ -1001,7 +1077,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
         false,
         stagedCommit,
         fileFormatVersion,
-        Collections.emptyMap());
+        copyUserTableProperties(properties),
+        shardingSpec);
   }
 
   @Override
@@ -1009,9 +1086,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws NoSuchNamespaceException {
 
+    ShardingSpec shardingSpec = SparkLanceShardingUtils.fromSparkTransforms(partitions);
+
     // Handle path-based access
     if (isPathBasedIdentifier(ident)) {
-      return stageCreateOrReplaceAtPath(ident, schema, properties);
+      return stageCreateOrReplaceAtPath(ident, schema, properties, shardingSpec);
     }
 
     // Require namespace to be configured for namespace-based access
@@ -1076,6 +1155,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
     } else {
       stagedCommit = StagedCommit.forNewTable(arrowSchema, location, commitOptions);
     }
+    stagedCommit.setShardingSpec(shardingSpec);
     return createStagedDataset(
         readOptions,
         processedSchema,
@@ -1085,12 +1165,16 @@ public abstract class BaseLanceNamespaceSparkCatalog
         managedVersioning,
         stagedCommit,
         fileFormatVersion,
-        Collections.emptyMap());
+        copyUserTableProperties(properties),
+        shardingSpec);
   }
 
   /** Stage create or replace a table at a direct path. */
   private StagedTable stageCreateOrReplaceAtPath(
-      Identifier ident, StructType schema, Map<String, String> properties) {
+      Identifier ident,
+      StructType schema,
+      Map<String, String> properties,
+      ShardingSpec shardingSpec) {
     String datasetUri = getDatasetUri(ident);
     StructType processedSchema = SchemaConverter.processSchemaWithProperties(schema, properties);
 
@@ -1115,6 +1199,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
     } else {
       stagedCommit = StagedCommit.forNewTable(arrowSchema, datasetUri, commitOptions);
     }
+    stagedCommit.setShardingSpec(shardingSpec);
     return createStagedDataset(
         readOptions,
         processedSchema,
@@ -1124,7 +1209,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
         false,
         stagedCommit,
         fileFormatVersion,
-        Collections.emptyMap());
+        copyUserTableProperties(properties),
+        shardingSpec);
   }
 
   /**
@@ -1311,6 +1397,69 @@ public abstract class BaseLanceNamespaceSparkCatalog
         .collect(Collectors.toList());
   }
 
+  private static Map<String, String> copyUserTableProperties(Map<String, String> properties) {
+    if (properties == null || properties.isEmpty()) {
+      return Collections.emptyMap();
+    }
+
+    Map<String, String> userProperties = new HashMap<>();
+    for (Map.Entry<String, String> entry : properties.entrySet()) {
+      if (!SPARK_RESERVED_TABLE_PROPERTIES.contains(entry.getKey())) {
+        userProperties.put(entry.getKey(), entry.getValue());
+      }
+    }
+    return userProperties.isEmpty() ? Collections.emptyMap() : userProperties;
+  }
+
+  private static Map<String, String> tablePropertiesToPersistOnCreate(
+      Map<String, String> properties, boolean managedVersioning) {
+    if (managedVersioning) {
+      return copyUserTableProperties(properties);
+    }
+
+    return Collections.emptyMap();
+  }
+
+  private void persistTableProperties(
+      Dataset dataset,
+      Map<String, String> properties,
+      boolean managedVersioning,
+      List<String> tableIdList) {
+    Map<String, String> userProperties = copyUserTableProperties(properties);
+    if (!userProperties.isEmpty()) {
+      Map<String, String> merged = new HashMap<>(dataset.getConfig());
+      merged.putAll(userProperties);
+      updateDatasetConfig(dataset, merged, managedVersioning, tableIdList);
+    }
+  }
+
+  private void updateDatasetConfig(
+      Dataset dataset,
+      Map<String, String> config,
+      boolean managedVersioning,
+      List<String> tableIdList) {
+    if (!managedVersioning) {
+      dataset.updateConfig(config);
+      return;
+    }
+
+    UpdateMap updateMap = UpdateMap.builder().updates(config).replace(true).build();
+    UpdateConfig updateConfig = UpdateConfig.builder().configUpdates(updateMap).build();
+    CommitBuilder commitBuilder =
+        new CommitBuilder(dataset)
+            .namespaceClient(namespace)
+            .tableId(tableIdList)
+            .namespaceClientManagedVersioning(true);
+    try (Transaction txn =
+            new Transaction.Builder()
+                .readVersion(dataset.version())
+                .operation(updateConfig)
+                .build();
+        Dataset committed = commitBuilder.execute(txn)) {
+      // auto-close txn and committed dataset
+    }
+  }
+
   private Table loadTableInternal(
       Identifier ident, Optional<Long> timestamp, Optional<String> version)
       throws NoSuchTableException {
@@ -1370,7 +1519,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
         namespaceProperties,
         managedVersioning,
         fileFormatVersion,
-        tableProperties);
+        tableProperties,
+        null);
   }
 
   /**
@@ -1442,7 +1592,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
     }
 
     return createDataset(
-        readOptions, schema, null, null, null, false, fileFormatVersion, tableProperties);
+        readOptions, schema, null, null, null, false, fileFormatVersion, tableProperties, null);
   }
 
   public abstract LanceDataset createDataset(
@@ -1453,7 +1603,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
       Map<String, String> namespaceProperties,
       boolean managedVersioning,
       String fileFormatVersion,
-      Map<String, String> tableProperties);
+      Map<String, String> tableProperties,
+      ShardingSpec shardingSpec);
 
   public abstract LanceDataset createStagedDataset(
       LanceSparkReadOptions readOptions,
@@ -1464,5 +1615,6 @@ public abstract class BaseLanceNamespaceSparkCatalog
       boolean managedVersioning,
       StagedCommit stagedCommit,
       String fileFormatVersion,
-      Map<String, String> tableProperties);
+      Map<String, String> tableProperties,
+      ShardingSpec shardingSpec);
 }

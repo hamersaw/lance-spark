@@ -13,9 +13,15 @@
  */
 package org.lance.spark.update;
 
+import org.apache.spark.ml.linalg.DenseVector;
+import org.apache.spark.ml.linalg.Vector;
+import org.apache.spark.ml.linalg.VectorUDT;
 import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.SaveMode;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +34,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 public abstract class BaseMergeIntoTest {
   private static final int SHUFFLE_PARTITIONS = 4;
@@ -182,22 +189,14 @@ public abstract class BaseMergeIntoTest {
    * Pins down per-branch version-column behavior of MERGE INTO on a stable-row-id table:
    *
    * <ul>
-   *   <li>UPDATE branch: advances {@code _row_last_updated_at_version}. Lance recalculates {@code
-   *       _row_created_at_version} downward (to v1) for rewritten rows — matching the row-level
-   *       UPDATE semantics already pinned in BaseCdfVersionTrackingTest.
+   *   <li>UPDATE branch: advances {@code _row_last_updated_at_version}. MERGE rewrites the matched
+   *       row into the merge commit, so {@code _row_created_at_version} matches {@code
+   *       _row_last_updated_at_version} for the replacement row.
    *   <li>DELETE branch: row disappears.
    *   <li>Untouched rows: both versions preserved.
-   *   <li>INSERT branch: <strong>known CDF gap</strong> — rows from MERGE's NOT MATCHED branch flow
-   *       through the same fragment-rewrite path as updated rows, so their {@code
-   *       _row_created_at_version} is <em>not</em> set to the merge commit version. CDF consumers
-   *       cannot distinguish merge-inserted rows from updated rows via created_at.
+   *   <li>INSERT branch: inserted rows are created in the merge commit, so {@code
+   *       _row_created_at_version} matches {@code _row_last_updated_at_version}.
    * </ul>
-   *
-   * <p>Tracking upstream fix for the INSERT-branch gap:
-   * https://github.com/lance-format/lance/issues/6735 — once that lands, change the inserted-row
-   * {@code created_at} assertion below from {@code <= initialInsertVersion} to {@code ==
-   * mergeCommitLastUpdated} (i.e. created_at should equal last_updated, both at the merge commit
-   * version).
    */
   @Test
   public void testMergeIntoTracksVersionColumnsPerBranch() {
@@ -265,7 +264,7 @@ public abstract class BaseMergeIntoTest {
       long lastUpdated = row.getLong(3);
       switch (id) {
         case 1:
-          // UPDATE branch: last_updated advances; created_at gets recalculated downward.
+          // UPDATE branch: last_updated advances; replacement row is created by the merge commit.
           Assertions.assertTrue(
               lastUpdated > beforeLastUpdated.get(1),
               "id=1 last_updated must advance across UPDATE branch (before="
@@ -273,9 +272,8 @@ public abstract class BaseMergeIntoTest {
                   + ", after="
                   + lastUpdated
                   + ")");
-          Assertions.assertTrue(
-              createdAt <= beforeLastUpdated.get(1),
-              "id=1 created_at must not jump forward across UPDATE (got " + createdAt + ")");
+          Assertions.assertEquals(
+              lastUpdated, createdAt, "id=1 created_at must match the merge commit");
           mergeCommitLastUpdated = lastUpdated;
           break;
         case 3:
@@ -292,24 +290,14 @@ public abstract class BaseMergeIntoTest {
           break;
         case 5:
         case 6:
-          // INSERT branch sharing the merge commit: last_updated equals the UPDATE branch's
-          // last_updated (single commit). created_at is currently NOT set to the commit version
-          // (it gets recalculated like an UPDATE rewrite). Tracked in
-          // lance-format/lance#6735 — flip the created_at assertion when fixed.
+          // INSERT branch sharing the merge commit: created_at and last_updated both equal the
+          // UPDATE branch's last_updated (single commit).
           Assertions.assertEquals(
               mergeCommitLastUpdated == null ? lastUpdated : mergeCommitLastUpdated.longValue(),
               lastUpdated,
               "id=" + id + " inserted row last_updated must match the merge commit");
-          Assertions.assertTrue(
-              createdAt <= initialInsertVersion,
-              "id="
-                  + id
-                  + " inserted row created_at currently does NOT reflect the merge commit "
-                  + "(initial="
-                  + initialInsertVersion
-                  + ", got="
-                  + createdAt
-                  + "). If this changes, update the assertion.");
+          Assertions.assertEquals(
+              lastUpdated, createdAt, "id=" + id + " inserted row created_at must match merge");
           break;
         default:
           Assertions.fail("unexpected surviving id=" + id);
@@ -370,5 +358,50 @@ public abstract class BaseMergeIntoTest {
             RowFactory.create(100, 1000),
             RowFactory.create(101, 1010));
     Assertions.assertEquals(expected, actual, "Expected merged rows to match result set");
+  }
+
+  /**
+   * End-to-end smoke test for DELETE on a Lance table with a UDT column. Verifies the catalog path
+   * ({@code saveAsTable} → {@code createTable} → {@code toArrowSchema}) accepts a UDT-rooted schema
+   * and that position-delta DELETE handles UDT-derived struct metadata.
+   *
+   * <p>Intentionally narrow — what this does NOT cover:
+   *
+   * <ul>
+   *   <li>PR #471's UDT case in {@code LanceArrowWriter.createFieldWriter} — the catalog unwraps
+   *       UDT to sqlType before the writer sees it. Direct coverage: {@code testVectorUDTRoundtrip}
+   *       in {@code BaseSparkDataTypeRoundtripTest}.
+   *   <li>PR #549's nullable-relaxation — DELETE only records position bitmaps, never calls {@code
+   *       writer.write()}. UPDATE / MERGE would, but Spark V2's analyzer ({@code
+   *       TableOutputResolver.canWrite}) rejects UDT assignments before lance-spark code runs.
+   * </ul>
+   */
+  @Test
+  public void testDeleteOnVectorUDTColumn() {
+    String tableName = "delete_udt_" + UUID.randomUUID().toString().replace("-", "");
+    String fullTable = catalogName + ".default." + tableName;
+    VectorUDT vectorUDT = new VectorUDT();
+    StructType schema =
+        new StructType().add("id", DataTypes.IntegerType, false).add("vec", vectorUDT, true);
+
+    Vector v1 = new DenseVector(new double[] {1.0, 2.0, 3.0});
+    Vector v2 = new DenseVector(new double[] {4.0, 5.0, 6.0});
+    Vector v3 = new DenseVector(new double[] {7.0, 8.0, 9.0});
+    spark
+        .createDataFrame(
+            Arrays.asList(
+                RowFactory.create(1, v1), RowFactory.create(2, v2), RowFactory.create(3, v3)),
+            schema)
+        .write()
+        .mode(SaveMode.ErrorIfExists)
+        .saveAsTable(fullTable);
+
+    spark.sql("DELETE FROM " + fullTable + " WHERE id = 2");
+
+    List<Integer> ids =
+        spark.sql("SELECT id FROM " + fullTable + " ORDER BY id").collectAsList().stream()
+            .map(r -> r.getInt(0))
+            .collect(Collectors.toList());
+    Assertions.assertEquals(Arrays.asList(1, 3), ids, "expected id=2 to be deleted");
   }
 }

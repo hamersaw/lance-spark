@@ -21,6 +21,7 @@ import org.lance.spark.LanceConstant;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.read.LanceInputPartition;
+import org.lance.spark.utils.BlobUtils;
 import org.lance.spark.utils.Utils;
 
 import org.apache.arrow.vector.ipc.ArrowReader;
@@ -29,17 +30,28 @@ import org.apache.spark.sql.types.StructType;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class LanceFragmentScanner implements AutoCloseable {
   private final Dataset dataset;
   private final LanceScanner scanner;
   private final int fragmentId;
-  private final boolean withFragemtId;
+  private final boolean withFragmentId;
   private final LanceInputPartition inputPartition;
   private final long datasetOpenTimeNs;
   private final long scannerCreateTimeNs;
+
+  /**
+   * Whether the scanner requested _rowaddr for blob reference support. When true, the _rowaddr
+   * column in the Arrow batch was implicitly added and should be stripped from user-visible output.
+   */
+  private final boolean withRowAddrForBlobs;
+
+  /** The names of blob columns in the projected schema. */
+  private final Set<String> blobColumnNames;
 
   private LanceFragmentScanner(
       Dataset dataset,
@@ -48,14 +60,18 @@ public class LanceFragmentScanner implements AutoCloseable {
       boolean withFragmentId,
       LanceInputPartition inputPartition,
       long datasetOpenTimeNs,
-      long scannerCreateTimeNs) {
+      long scannerCreateTimeNs,
+      boolean withRowAddrForBlobs,
+      Set<String> blobColumnNames) {
     this.dataset = dataset;
     this.scanner = scanner;
     this.fragmentId = fragmentId;
-    this.withFragemtId = withFragmentId;
+    this.withFragmentId = withFragmentId;
     this.inputPartition = inputPartition;
     this.datasetOpenTimeNs = datasetOpenTimeNs;
     this.scannerCreateTimeNs = scannerCreateTimeNs;
+    this.withRowAddrForBlobs = withRowAddrForBlobs;
+    this.blobColumnNames = blobColumnNames;
   }
 
   public static LanceFragmentScanner create(int fragmentId, LanceInputPartition inputPartition) {
@@ -63,17 +79,6 @@ public class LanceFragmentScanner implements AutoCloseable {
     LanceScanner lanceScanner = null;
     try {
       LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
-      // Optionally rebuild the namespace client on the executor so the dataset open routes through
-      // Utils.OpenDatasetBuilder's namespaceClient branch. This preserves the storage options
-      // provider on the Rust side, which refreshes short-lived vended credentials (e.g. STS
-      // tokens) during long-running scans. The price is an eager describeTable() RPC against the
-      // namespace on every fragment open.
-      //
-      // For catalogs whose backing service authenticates per-call (e.g. Hive Metastore over
-      // Kerberos) executors typically lack a TGT and that RPC fails with "GSS initiate failed".
-      // Setting LanceSparkReadOptions.CONFIG_EXECUTOR_CREDENTIAL_REFRESH=false makes executors
-      // skip the rebuild and open the dataset by URI using the initialStorageOptions the driver
-      // already obtained, at the cost of losing the Rust-side credential refresh callback.
       if (inputPartition.getNamespaceImpl() != null && readOptions.isExecutorCredentialRefresh()) {
         if (LanceRuntime.useNamespaceOnWorkers(inputPartition.getNamespaceImpl())) {
           readOptions.setNamespace(
@@ -97,16 +102,27 @@ public class LanceFragmentScanner implements AutoCloseable {
                 fragmentId, readOptions.getDatasetUri(), readOptions.getVersion()));
       }
       ScanOptions.Builder scanOptions = new ScanOptions.Builder();
+
+      // Detect blob columns in the schema
+      Set<String> blobColumnNames = getBlobColumnNames(inputPartition.getSchema());
+      boolean hasBlobColumns = !blobColumnNames.isEmpty();
+
       List<String> projectedColumns = getColumnNames(inputPartition.getSchema());
       if (projectedColumns.isEmpty() && inputPartition.getSchema().isEmpty()) {
-        // Lance requires at least one projected column. Use _rowid as a lightweight
-        // sentinel so the scanner still returns the correct row count (e.g. SELECT 1).
-        // Only do this when the schema is truly empty; when the schema contains virtual
-        // columns (e.g. _fragid, blob position/size) that are not passed to the scanner
-        // but added later by the batch scanner, adding _rowid here would shift column
-        // indices and cause Spark to read wrong data.
         scanOptions.withRowId(true);
       }
+      if (hasField(inputPartition.getSchema(), LanceConstant.ROW_ID)) {
+        scanOptions.withRowId(true);
+      }
+
+      // Request _rowaddr when blob columns are present so we can build blob references.
+      boolean userRequestedRowAddr =
+          hasField(inputPartition.getSchema(), LanceConstant.ROW_ADDRESS);
+      boolean withRowAddrForBlobs = hasBlobColumns && !userRequestedRowAddr;
+      if (hasBlobColumns || userRequestedRowAddr) {
+        scanOptions.withRowAddress(true);
+      }
+
       scanOptions.columns(projectedColumns);
       if (inputPartition.getWhereCondition().isPresent()) {
         scanOptions.filter(inputPartition.getWhereCondition().get());
@@ -114,12 +130,6 @@ public class LanceFragmentScanner implements AutoCloseable {
       scanOptions.batchSize(readOptions.getBatchSize());
       if (readOptions.getNearest() != null) {
         scanOptions.nearest(readOptions.getNearest());
-        // We strictly set `prefilter = true` here to ensure query correctness.
-        // This is necessary due to the combination of two factors:
-        // 1. Spark currently performs the vector search by individually scanning each fragment.
-        // 2. Lance mandates that `prefilter` must be enabled for fragmented vector queries.
-        // If Spark's execution model or Lance's search functionality changes in the future,
-        // we need to revisit this.
         scanOptions.prefilter(true);
       }
       if (readOptions.getFullTextQuery() != null) {
@@ -146,7 +156,9 @@ public class LanceFragmentScanner implements AutoCloseable {
           withFragmentId,
           inputPartition,
           dsOpenTimeNs,
-          scanCreateTimeNs);
+          scanCreateTimeNs,
+          withRowAddrForBlobs,
+          blobColumnNames);
     } catch (Throwable throwable) {
       if (lanceScanner != null) {
         try {
@@ -212,8 +224,8 @@ public class LanceFragmentScanner implements AutoCloseable {
     return fragmentId;
   }
 
-  public boolean withFragemtId() {
-    return withFragemtId;
+  public boolean withFragmentId() {
+    return withFragmentId;
   }
 
   public LanceInputPartition getInputPartition() {
@@ -228,20 +240,37 @@ public class LanceFragmentScanner implements AutoCloseable {
     return scannerCreateTimeNs;
   }
 
-  /**
-   * Builds the projection column list for the scanner. Regular data columns come first, followed by
-   * special metadata columns in the order matching {@link
-   * org.lance.spark.LanceDataset#METADATA_COLUMNS}. All special columns (_rowid, _rowaddr, version
-   * columns) go through scanner.project() for consistent output ordering.
-   */
+  /** Whether the scanner implicitly requested _rowaddr for blob reference support. */
+  public boolean isWithRowAddrForBlobs() {
+    return withRowAddrForBlobs;
+  }
+
+  /** Returns the blob column names in the projected schema. */
+  public Set<String> getBlobColumnNames() {
+    return blobColumnNames;
+  }
+
+  /** Returns the dataset URI for blob references. */
+  public String getDatasetUri() {
+    return inputPartition.getReadOptions().getDatasetUri();
+  }
+
+  private static Set<String> getBlobColumnNames(StructType schema) {
+    Set<String> blobColumns = new HashSet<>();
+    for (StructField field : schema.fields()) {
+      if (BlobUtils.isBlobSparkField(field)) {
+        blobColumns.add(field.name());
+      }
+    }
+    return blobColumns;
+  }
+
   private static List<String> getColumnNames(StructType schema) {
-    // Collect all field names in the schema for quick lookup
     java.util.Set<String> schemaFields = new java.util.HashSet<>();
     for (StructField field : schema.fields()) {
       schemaFields.add(field.name());
     }
 
-    // Regular data columns (exclude all special/metadata columns)
     List<String> columns =
         Arrays.stream(schema.fields())
             .map(StructField::name)
@@ -255,14 +284,6 @@ public class LanceFragmentScanner implements AutoCloseable {
                         && !name.endsWith(LanceConstant.BLOB_POSITION_SUFFIX)
                         && !name.endsWith(LanceConstant.BLOB_SIZE_SUFFIX))
             .collect(Collectors.toList());
-
-    // Append special columns in METADATA_COLUMNS order (must match Rust scanner output order)
-    if (schemaFields.contains(LanceConstant.ROW_ID)) {
-      columns.add(LanceConstant.ROW_ID);
-    }
-    if (schemaFields.contains(LanceConstant.ROW_ADDRESS)) {
-      columns.add(LanceConstant.ROW_ADDRESS);
-    }
     if (schemaFields.contains(LanceConstant.ROW_LAST_UPDATED_AT_VERSION)) {
       columns.add(LanceConstant.ROW_LAST_UPDATED_AT_VERSION);
     }
@@ -271,5 +292,14 @@ public class LanceFragmentScanner implements AutoCloseable {
     }
 
     return columns;
+  }
+
+  private static boolean hasField(StructType schema, String name) {
+    for (StructField field : schema.fields()) {
+      if (field.name().equals(name)) {
+        return true;
+      }
+    }
+    return false;
   }
 }
