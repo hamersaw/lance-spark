@@ -274,7 +274,7 @@ public class LanceScanTest {
                     Collections.emptyMap(),
                     null,
                     Collections.emptyMap(),
-                    Collections.emptyMap())
+                    null)
                 .build();
     Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
     assertTrue(
@@ -306,7 +306,7 @@ public class LanceScanTest {
                     Collections.emptyMap(),
                     null,
                     Collections.emptyMap(),
-                    Collections.emptyMap())
+                    null)
                 .build();
     Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
     assertTrue(
