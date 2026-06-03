@@ -401,7 +401,8 @@ public class LanceSparkReadOptions implements Serializable {
         && Objects.equals(indexCacheSize, that.indexCacheSize)
         && Objects.equals(metadataCacheSize, that.metadataCacheSize)
         && Objects.equals(storageOptions, that.storageOptions)
-        && Objects.equals(tableId, that.tableId);
+        && Objects.equals(tableId, that.tableId)
+        && Objects.equals(catalogName, that.catalogName);
   }
 
   @Override
@@ -422,6 +423,7 @@ public class LanceSparkReadOptions implements Serializable {
         topNPushDown,
         storageOptions,
         tableId,
+        catalogName,
         executorCredentialRefresh);
   }
 
