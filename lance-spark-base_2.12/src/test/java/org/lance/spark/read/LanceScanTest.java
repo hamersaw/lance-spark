@@ -200,6 +200,7 @@ public class LanceScanTest {
     fragKeys.put(1, "west");
     Expression partitionExpression = Expressions.column("region");
 
+    LanceSplit.ScanPlanResult plan = LanceSplit.planScan(TestUtils.TestTable1Config.readOptions);
     LanceScan scan =
         new LanceScan(
             TEST_SCHEMA,
@@ -213,6 +214,8 @@ public class LanceScanTest {
             null,
             Collections.emptyMap(),
             null,
+            plan.getSplits(),
+            plan.getFragmentRowCounts(),
             partitionExpression,
             fragKeys,
             Collections.emptyMap(),
@@ -313,6 +316,8 @@ public class LanceScanTest {
     fragKeys.put(2, 2);
     Expression partitionExpression = Expressions.bucket(4, "region");
 
+    LanceSplit.ScanPlanResult bucketPlan =
+        LanceSplit.planScan(TestUtils.TestTable1Config.readOptions);
     LanceScan scan =
         new LanceScan(
             TEST_SCHEMA,
@@ -326,6 +331,8 @@ public class LanceScanTest {
             null,
             Collections.emptyMap(),
             null,
+            bucketPlan.getSplits(),
+            bucketPlan.getFragmentRowCounts(),
             partitionExpression,
             fragKeys,
             Collections.emptyMap(),
