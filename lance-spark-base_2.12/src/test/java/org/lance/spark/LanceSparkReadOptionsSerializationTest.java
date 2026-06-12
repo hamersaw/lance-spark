@@ -14,7 +14,6 @@
 package org.lance.spark;
 
 import org.lance.ipc.FullTextQuery;
-import org.lance.ipc.Query;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -31,36 +30,6 @@ import java.util.Map;
 import java.util.Optional;
 
 public class LanceSparkReadOptionsSerializationTest {
-
-  @Test
-  public void testJavaSerialization() throws IOException, ClassNotFoundException {
-    String json = "{\"column\":\"vector_col\",\"k\":10,\"key\":[1.0,2.0,3.0]}";
-
-    LanceSparkReadOptions options =
-        LanceSparkReadOptions.builder().datasetUri("s3://bucket/path").nearest(json).build();
-
-    Query originalQuery = options.getNearest();
-    Assertions.assertNotNull(originalQuery);
-
-    // Serialize
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    ObjectOutputStream oos = new ObjectOutputStream(baos);
-    oos.writeObject(options);
-    oos.close();
-
-    // Deserialize
-    ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
-    ObjectInputStream ois = new ObjectInputStream(bais);
-    LanceSparkReadOptions deserializedOptions = (LanceSparkReadOptions) ois.readObject();
-
-    Query deserializedQuery = deserializedOptions.getNearest();
-
-    Assertions.assertNotNull(
-        deserializedQuery, "Nearest query should not be null after deserialization");
-    Assertions.assertEquals(originalQuery.getK(), deserializedQuery.getK());
-    Assertions.assertEquals(originalQuery.getColumn(), deserializedQuery.getColumn());
-    Assertions.assertArrayEquals(originalQuery.getKey(), deserializedQuery.getKey());
-  }
 
   @Test
   public void testFullTextQuerySerializationRoundTrip() throws IOException, ClassNotFoundException {
@@ -101,7 +70,6 @@ public class LanceSparkReadOptionsSerializationTest {
     Assertions.assertNotNull(
         versioned.getFullTextQuery(), "fullTextQuery must not be dropped by withVersion()");
     Assertions.assertEquals(42, versioned.getVersion());
-    // Structural equality check
     Assertions.assertTrue(
         org.lance.spark.utils.FullTextQueryUtils.equals(
             options.getFullTextQuery(), versioned.getFullTextQuery()));
@@ -190,54 +158,27 @@ public class LanceSparkReadOptionsSerializationTest {
   }
 
   @Test
-  public void testUseIndexSerialization() throws IOException, ClassNotFoundException {
-    // Case 1: useIndex is explicitly set to false
-    String jsonFalse =
-        "{\"column\":\"vector_col\",\"k\":10,\"key\":[1.0,2.0,3.0],\"useIndex\":false}";
-    LanceSparkReadOptions optionsFalse =
-        LanceSparkReadOptions.builder().datasetUri("s3://bucket/path").nearest(jsonFalse).build();
+  public void testFtsEqualsAndHashCodeStabilityAcrossConstructionPaths() {
+    FullTextQuery fts1 =
+        FullTextQuery.match(
+            "hello", "body", 1.5f, Optional.of(1), 50, FullTextQuery.Operator.AND, 2);
+    FullTextQuery fts2 =
+        FullTextQuery.match(
+            "hello", "body", 1.5f, Optional.of(1), 50, FullTextQuery.Operator.AND, 2);
 
-    Query queryFalse = optionsFalse.getNearest();
-    Assertions.assertFalse(queryFalse.isUseIndex());
+    LanceSparkReadOptions opts1 =
+        LanceSparkReadOptions.builder().datasetUri("s3://b/p").fullTextQuery(fts1).build();
+    LanceSparkReadOptions opts2 =
+        LanceSparkReadOptions.builder().datasetUri("s3://b/p").fullTextQuery(fts2).build();
 
-    // Serialize
-    ByteArrayOutputStream baosFalse = new ByteArrayOutputStream();
-    ObjectOutputStream oosFalse = new ObjectOutputStream(baosFalse);
-    oosFalse.writeObject(optionsFalse);
-    oosFalse.close();
+    Assertions.assertEquals(opts1, opts2, "Two instances with identical MatchQuery must be equal");
+    Assertions.assertEquals(
+        opts1.hashCode(), opts2.hashCode(), "Equal instances must have equal hashCodes");
 
-    // Deserialize
-    ByteArrayInputStream baisFalse = new ByteArrayInputStream(baosFalse.toByteArray());
-    ObjectInputStream oisFalse = new ObjectInputStream(baisFalse);
-    LanceSparkReadOptions deserializedOptionsFalse = (LanceSparkReadOptions) oisFalse.readObject();
-
-    Assertions.assertFalse(
-        deserializedOptionsFalse.getNearest().isUseIndex(),
-        "useIndex should remain false after serialization/deserialization");
-
-    // Case 2: useIndex is explicitly set to true
-    String jsonTrue =
-        "{\"column\":\"vector_col\",\"k\":10,\"key\":[1.0,2.0,3.0],\"useIndex\":true}";
-    LanceSparkReadOptions optionsTrue =
-        LanceSparkReadOptions.builder().datasetUri("s3://bucket/path").nearest(jsonTrue).build();
-
-    Query queryTrue = optionsTrue.getNearest();
-    Assertions.assertTrue(queryTrue.isUseIndex());
-
-    // Serialize
-    ByteArrayOutputStream baosTrue = new ByteArrayOutputStream();
-    ObjectOutputStream oosTrue = new ObjectOutputStream(baosTrue);
-    oosTrue.writeObject(optionsTrue);
-    oosTrue.close();
-
-    // Deserialize
-    ByteArrayInputStream baisTrue = new ByteArrayInputStream(baosTrue.toByteArray());
-    ObjectInputStream oisTrue = new ObjectInputStream(baisTrue);
-    LanceSparkReadOptions deserializedOptionsTrue = (LanceSparkReadOptions) oisTrue.readObject();
-
-    Assertions.assertTrue(
-        deserializedOptionsTrue.getNearest().isUseIndex(),
-        "useIndex should remain true after serialization/deserialization");
+    FullTextQuery fts3 = FullTextQuery.match("world", "body");
+    LanceSparkReadOptions opts3 =
+        LanceSparkReadOptions.builder().datasetUri("s3://b/p").fullTextQuery(fts3).build();
+    Assertions.assertNotEquals(opts1, opts3);
   }
 
   @Test
@@ -264,6 +205,20 @@ public class LanceSparkReadOptionsSerializationTest {
                 LanceSparkReadOptions.CONFIG_EXECUTOR_CREDENTIAL_REFRESH, "true"),
             "s3://bucket/path");
     Assertions.assertTrue(optionsTrue.isExecutorCredentialRefresh());
+  }
+
+  @Test
+  public void testDeprecatedNearestReadOptionFailsFast() {
+    IllegalArgumentException exception =
+        Assertions.assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                LanceSparkReadOptions.from(
+                    Collections.singletonMap("nearest", "{\"column\":\"vector\"}"),
+                    "s3://bucket/path"));
+
+    Assertions.assertTrue(exception.getMessage().contains("nearest"));
+    Assertions.assertTrue(exception.getMessage().contains("VECTOR_SEARCH"));
   }
 
   @Test
@@ -305,11 +260,6 @@ public class LanceSparkReadOptionsSerializationTest {
         "withVersion() must propagate the executor_credential_refresh flag");
   }
 
-  /**
-   * Catalog-level config (set via {@code --conf spark.sql.catalog.<name>.<key>}) is the only route
-   * available to SQL DML (DELETE / UPDATE / MERGE INTO), which has no per-statement {@code
-   * .option(...)} attach point. This test guards the catalog-conf path.
-   */
   @Test
   public void testExecutorCredentialRefreshFromCatalogDefaults() {
     Map<String, String> catalogOpts = new HashMap<>();
@@ -328,20 +278,12 @@ public class LanceSparkReadOptionsSerializationTest {
             + "so it takes effect for SELECT without .option(...) and for SQL DML");
   }
 
-  /**
-   * Spark's scan-time options (via {@code spark.read.option(...)}) go through a second {@code
-   * fromOptions(mergedMap)} rebuild in {@code LanceDataset.newScanBuilder}. Per-read settings must
-   * win over catalog-level defaults.
-   */
   @Test
   public void testPerReadOptionOverridesCatalogDefaults() {
     Map<String, String> catalogOpts = new HashMap<>();
     catalogOpts.put(LanceSparkReadOptions.CONFIG_EXECUTOR_CREDENTIAL_REFRESH, "false");
     LanceSparkCatalogConfig catalogConfig = LanceSparkCatalogConfig.from(catalogOpts);
 
-    // Simulate the rebuild path in LanceDataset.newScanBuilder: the builder starts by applying
-    // the catalog defaults, then fromOptions() replays against the merged (catalog + per-read)
-    // map where the per-read value wins.
     Map<String, String> merged = new HashMap<>(catalogConfig.getStorageOptions());
     merged.put(LanceSparkReadOptions.CONFIG_EXECUTOR_CREDENTIAL_REFRESH, "true");
 

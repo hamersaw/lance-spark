@@ -26,6 +26,8 @@ import org.apache.spark.sql.types.StructType;
 
 import java.util.Map;
 
+import static org.lance.spark.utils.BlobUtils.ARROW_EXTENSION_BLOB_V2;
+import static org.lance.spark.utils.BlobUtils.ARROW_EXTENSION_NAME_KEY;
 import static org.lance.spark.utils.BlobUtils.LANCE_ENCODING_BLOB_KEY;
 import static org.lance.spark.utils.BlobUtils.LANCE_ENCODING_BLOB_VALUE;
 import static org.lance.spark.utils.FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY;
@@ -42,8 +44,11 @@ import static org.lance.spark.utils.VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY;
  */
 public class SchemaConverter {
 
-  private SchemaConverter() {
-    // Utility class
+  private SchemaConverter() {}
+
+  public static StructType processSchemaWithProperties(
+      StructType sparkSchema, Map<String, String> properties) {
+    return processSchemaWithProperties(sparkSchema, properties, null);
   }
 
   /**
@@ -52,13 +57,16 @@ public class SchemaConverter {
    *
    * @param sparkSchema the original Spark StructType
    * @param properties table properties that may contain column metadata
+   * @param fileFormatVersion the file format version (e.g. "2.1", "2.2") used to choose blob v1 vs
+   *     v2 encoding metadata on {@code BinaryType} columns. Pass {@code null} to default blob
+   *     columns to v1.
    * @return StructType with metadata added for matching columns
    */
   public static StructType processSchemaWithProperties(
-      StructType sparkSchema, Map<String, String> properties) {
+      StructType sparkSchema, Map<String, String> properties, String fileFormatVersion) {
     StructType schemaWithVectors = addVectorMetadata(sparkSchema, properties);
     StructType schemaWithFloat16 = addFloat16Metadata(schemaWithVectors, properties);
-    StructType schemaWithBlobs = addBlobMetadata(schemaWithFloat16, properties);
+    StructType schemaWithBlobs = addBlobMetadata(schemaWithFloat16, properties, fileFormatVersion);
     StructType schemaWithLargeVarChar = addLargeVarCharMetadata(schemaWithBlobs, properties);
     StructType schemaWithFixedSizeBinary =
         addFixedSizeBinaryMetadata(schemaWithLargeVarChar, properties);
@@ -195,10 +203,11 @@ public class SchemaConverter {
    *
    * @param sparkSchema the original Spark StructType
    * @param properties table properties that may contain blob column metadata
+   * @param fileFormatVersion the file format version used to choose blob v1 or v2
    * @return StructType with metadata added for blob columns
    */
   private static StructType addBlobMetadata(
-      StructType sparkSchema, Map<String, String> properties) {
+      StructType sparkSchema, Map<String, String> properties, String fileFormatVersion) {
     if (properties == null || properties.isEmpty()) {
       return sparkSchema;
     }
@@ -214,10 +223,13 @@ public class SchemaConverter {
         if ("blob".equalsIgnoreCase(encodingValue)) {
           if (field.dataType() instanceof BinaryType) {
             // Add metadata for blob encoding
+            boolean useV2 = BlobUtils.fileFormatSupportsBlobV2(fileFormatVersion);
+            String metaKey = useV2 ? ARROW_EXTENSION_NAME_KEY : LANCE_ENCODING_BLOB_KEY;
+            String metaVal = useV2 ? ARROW_EXTENSION_BLOB_V2 : LANCE_ENCODING_BLOB_VALUE;
             Metadata newMetadata =
                 new MetadataBuilder()
                     .withMetadata(field.metadata())
-                    .putString(LANCE_ENCODING_BLOB_KEY, LANCE_ENCODING_BLOB_VALUE)
+                    .putString(metaKey, metaVal)
                     .build();
             newFields[i] =
                 new StructField(field.name(), field.dataType(), field.nullable(), newMetadata);

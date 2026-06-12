@@ -20,7 +20,6 @@ import org.lance.spark.read.metric.LanceCustomMetrics;
 import org.lance.spark.sharding.SparkLanceShardingUtils;
 import org.lance.spark.utils.FullTextQueryUtils;
 import org.lance.spark.utils.Optional;
-import org.lance.spark.utils.QueryUtils;
 
 import org.apache.arrow.util.Preconditions;
 import org.apache.spark.sql.catalyst.InternalRow;
@@ -300,7 +299,6 @@ public class LanceScan
    *   <li>Filters are present (unknown selectivity makes row count estimation unreliable)
    *   <li>TopN sort orders are present (all fragments needed for global sort)
    *   <li>Aggregation is pushed (e.g., COUNT(*) LIMIT — row counts don't apply)
-   *   <li>Vector search (nearest) is active (needs global search across all fragments)
    *   <li>FTS query is active (needs all fragments to return complete matching results)
    *   <li>Fragment row counts are unavailable
    * </ul>
@@ -315,7 +313,6 @@ public class LanceScan
         || whereConditions.isPresent()
         || topNSortOrders.isPresent()
         || pushedAggregation.isPresent()
-        || readOptions.getNearest() != null
         || readOptions.getFullTextQuery() != null
         || fragmentRowCounts.isEmpty()) {
       return allSplits;
@@ -432,11 +429,6 @@ public class LanceScan
     result = result.$plus(scala.Tuple2.apply("offset", offset.toString()));
     result = result.$plus(scala.Tuple2.apply("topNSortOrders", topNSortOrders.toString()));
     result = result.$plus(scala.Tuple2.apply("pushedAggregation", pushedAggregation.toString()));
-    if (readOptions.getNearest() != null) {
-      result =
-          result.$plus(
-              scala.Tuple2.apply("nearest", QueryUtils.queryToString(readOptions.getNearest())));
-    }
     if (readOptions.getFullTextQuery() != null) {
       result =
           result.$plus(

@@ -13,9 +13,7 @@
  */
 package org.lance.spark.read;
 
-import org.lance.index.DistanceType;
 import org.lance.ipc.FullTextQuery;
-import org.lance.ipc.Query;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.TestUtils;
 
@@ -246,39 +244,7 @@ public class LanceScanTest {
     assertInstanceOf(UnknownPartitioning.class, partitioning);
   }
 
-  // --- getMetaData: nearest and fullTextQuery keys ---
-
-  @Test
-  public void testGetMetaDataNearestKeyAbsentWhenNull() {
-    LanceScan scan = buildScan();
-    Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
-    assertFalse(
-        meta.containsKey("nearest"), "nearest key must be absent when getNearest() == null");
-  }
-
-  @Test
-  public void testGetMetaDataNearestKeyPresentWhenSet() {
-    Query.Builder qb = new Query.Builder();
-    qb.setK(5);
-    qb.setColumn("vec");
-    qb.setKey(new float[] {1.0f, 2.0f});
-    qb.setUseIndex(true);
-    qb.setDistanceType(DistanceType.L2);
-    LanceSparkReadOptions opts =
-        LanceSparkReadOptions.builder()
-            .datasetUri(TestUtils.TestTable1Config.readOptions.getDatasetUri())
-            .nearest(qb.build())
-            .build();
-    LanceScan scan =
-        (LanceScan)
-            new LanceScanBuilder(
-                    TEST_SCHEMA, opts, Collections.emptyMap(), null, Collections.emptyMap(), null)
-                .build();
-    Map<String, String> meta = scala.collection.JavaConverters.mapAsJavaMap(scan.getMetaData());
-    assertTrue(
-        meta.containsKey("nearest"), "nearest key must be present when getNearest() != null");
-    assertNotNull(meta.get("nearest"), "nearest metadata value must not be null");
-  }
+  // --- getMetaData: fullTextQuery key ---
 
   @Test
   public void testGetMetaDataFullTextQueryKeyAbsentWhenNull() {

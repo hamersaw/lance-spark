@@ -49,6 +49,9 @@ Lance provides SQL extensions that add additional functionality beyond standard 
 
 The following features require the Lance Spark SQL extension to be enabled:
 
+- [VECTOR_SEARCH](operations/dql/vector-search.md) - Run vector similarity search through Lance namespace execution
+- [SEARCH](operations/dql/search.md) - Run full-text search through Lance namespace execution
+- [HYBRID_SEARCH](operations/dql/hybrid-search.md) - Combine vector and full-text search with reciprocal rank fusion
 - [ADD COLUMNS with backfill](operations/dml/add-columns.md) - Add new columns and backfill existing rows with data
 - [UPDATE COLUMNS with backfill](operations/dml/update-columns.md) - Update existing columns using data from a source
 - [OPTIMIZE](operations/ddl/optimize.md) - Compact table fragments for improved query performance
@@ -501,3 +504,62 @@ Lance Spark maintains index and metadata caches to minimize redundant I/O. Cache
 | `LANCE_METADATA_CACHE_SIZE`| 1GB     | Metadata cache size in bytes.    |
 
 For details on how caching works and tuning recommendations, see [Performance Tuning - Caching](performance.md#caching).
+
+## Blob v2 Reads
+
+Lance datasets that contain a blob v2 column expose that column to Spark as the native 5-field descriptor struct: `struct<kind:short, position:long, size:long, blob_id:long, blob_uri:string>`. Querying the descriptor never fetches the blob bytes, so `SELECT payload.size` and `SELECT payload.blob_uri` are cheap.
+
+```sql
+-- Query metadata only (no byte fetch):
+SELECT id, payload.size, payload.kind FROM lance.ns.tbl;
+```
+
+A column is treated as blob v2 when the Arrow field carries `ARROW:extension:name = lance.blob.v2`, matching lance-core's blob v2 extension type.
+
+Filter pushdown for SQL `WHERE` is disabled on blob v2 tables; Spark evaluates predicates after the scan. Zonemap-based fragment pruning still runs.
+
+The connector does not materialize blob bytes on read; queries against descriptor fields fetch metadata only. See [Blob v2 Writes](#blob-v2-writes) below for the write path.
+
+## Blob v2 Writes
+
+To write blob v2 columns, set `file_format_version` to `2.2` or higher and set
+`<column>.lance.encoding = blob` in `TBLPROPERTIES`.
+
+Spark still sees the column as `BINARY` when writing. The connector converts that binary
+value into the Arrow blob write struct during encoding.
+
+On reads, blob v2 columns are exposed as descriptor structs. See
+[Blob v2 Reads](#blob-v2-reads). For writes, `INSERT` and DataFrame append still take
+`BINARY`.
+
+```sql
+CREATE TABLE lance.mydb.users (
+    id INT NOT NULL,
+    content BINARY
+) USING lance
+TBLPROPERTIES (
+    'content.lance.encoding' = 'blob',
+    'file_format_version' = '2.2'
+);
+```
+
+With `file_format_version = '2.2'` or higher, blob columns are written using blob v2
+encoding and `ARROW:extension:name = lance.blob.v2 metadata`.
+
+With an older version, or when `file_format_version` is not set, blob columns use the
+legacy v1 encoding with `lance-encoding:blob = true` metadata.
+
+Blob encoding requires a numeric `file_format_version`, such as `2.2`.
+
+Blob v2 writes must go through the catalog path. Use SQL DDL with `TBLPROPERTIES`, as
+shown above, or use the `DataFrameWriterV2` API:
+
+```python
+df.writeTo("lance.ns.users") \
+    .tableProperty("content.lance.encoding", "blob") \
+    .tableProperty("file_format_version", "2.2") \
+    .create()
+```
+
+Setting only `file_format_version` does not enable blob encoding. Without
+`<column>.lance.encoding = blob`, the column is written as plain `BINARY`.

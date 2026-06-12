@@ -7,7 +7,7 @@ Creates a scalar index on a Lance table to accelerate queries.
 
 ## Overview
 
-The `CREATE INDEX` command builds an index on one or more columns of a Lance table. Indexing can improve the performance of queries that filter on the indexed columns. This operation is performed in a distributed manner, building indexes for each data fragment in parallel.
+The `CREATE INDEX` command builds an index on one or more columns of a Lance table. Indexing can improve the performance of queries that filter on the indexed columns. Depending on the index method, Lance Spark either uses a fragment-parallel build path or a driver-coordinated commit flow after parallel executor builds.
 
 ## Basic Usage
 
@@ -24,12 +24,30 @@ The following index methods are supported:
 
 | Method  | Description                                                                 |
 |---------|-----------------------------------------------------------------------------|
+| `zonemap` | Lightweight min/max index for fragment pruning on a scalar column. |
 | `btree` | B-tree index for efficient range queries and point lookups on scalar columns. |
 | `fts`   | Full-text search (inverted) index for text search on string columns.        |
 
 ## Options
 
 The `CREATE INDEX` command supports options via the `WITH` clause to control index creation. These options are specific to the chosen index method.
+
+### Common Options
+
+These options apply to all index methods:
+
+| Option  | Type    | Description                                                                                                                                                                |
+|---------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `train` | Boolean | When `false`, defer index training: register an empty index covering no rows without scanning any data, to be populated later. Default `true`. See [Deferred Index Creation](#deferred-index-creation). |
+
+### ZoneMap Options
+
+For the `zonemap` method, the following options are supported:
+
+| Option          | Type | Description                                  |
+|-----------------|------|----------------------------------------------|
+| `rows_per_zone` | Long    | The approximate number of rows per zonemap zone. |
+| `num_segments`  | Integer | Target number of index segments (upper bound; clamped to fragment count when larger). Each segment covers a batch of fragments. Defaults to `min(fragment_count, spark.default.parallelism)`. |
 
 ### BTree Options
 
@@ -95,6 +113,15 @@ Create a composite index on multiple columns.
     ALTER TABLE lance.db.logs CREATE INDEX idx_ts_level USING btree (timestamp, level);
     ```
 
+### Lightweight Fragment Pruning
+
+Create a zonemap index when you want lightweight min/max-based fragment pruning:
+
+=== "SQL"
+    ```sql
+    ALTER TABLE lance.db.users CREATE INDEX idx_id_zonemap USING zonemap (id);
+    ```
+
 ### Indexing with Options
 
 Create an index and specify the `zone_size` for the B-tree:
@@ -102,6 +129,15 @@ Create an index and specify the `zone_size` for the B-tree:
 === "SQL"
     ```sql
     ALTER TABLE lance.db.users CREATE INDEX idx_id_zoned USING btree (id) WITH (zone_size = 2048);
+    ```
+
+### Zonemap with Options
+
+Create a zonemap index and specify the approximate number of rows per zone:
+
+=== "SQL"
+    ```sql
+    ALTER TABLE lance.db.users CREATE INDEX idx_id_zonemap USING zonemap (id) WITH (rows_per_zone = 2048);
     ```
 
 ### Full-Text Search Index
@@ -122,6 +158,41 @@ Create an FTS index on a text column:
     );
     ```
 
+Query the indexed column with the [SEARCH](../dql/search.md) table function.
+
+### Deferred Index Creation
+
+Register an index without scanning any data by setting `train = false`. This commits an empty index
+(covering no rows) instantly on the driver — useful when you want the index to exist immediately and
+fill it in later, or when you intend to build it incrementally:
+
+=== "SQL"
+    ```sql
+    ALTER TABLE lance.db.users CREATE INDEX idx_id USING zonemap (id) WITH (train = false);
+    ```
+
+A deferred index returns `fragments_indexed = 0` and is treated as fully unindexed: queries fall back
+to scanning the data until it is populated. There are two ways to populate it:
+
+- **Full distributed build (recommended):** re-run `CREATE INDEX` with the same name. This uses the
+  normal distributed build across Spark tasks and atomically replaces the empty index:
+
+    ```sql
+    ALTER TABLE lance.db.users CREATE INDEX idx_id USING zonemap (id);
+    ```
+
+- **Incremental build through the SDK:** when only some fragments are unindexed (for example after
+  appending data to an already-built index), `Dataset.optimizeIndices` indexes just the unindexed
+  fragments. This currently runs on a single node:
+
+    ```java
+    dataset.optimizeIndices(OptimizeOptions.builder().build());
+    ```
+
+`train = false` is supported for all index methods (`btree`, `fts`, `zonemap`). Because a deferred
+index performs no segmented build at creation time, `num_segments` cannot be combined with
+`train = false` — pass it on the eager build that populates the index instead.
+
 ## Output
 
 The `CREATE INDEX` command returns the following information about the operation:
@@ -136,17 +207,20 @@ The `CREATE INDEX` command returns the following information about the operation
 Consider creating an index when:
 
 - You frequently filter a large table on a specific column.
+- You want lightweight fragment pruning based on per-zone min/max statistics.
 - Your queries involve point lookups or small range scans.
 
 ## How It Works
 
 The `CREATE INDEX` command operates as follows:
 
-1.  **Distributed Index Building**: For each fragment in the Lance dataset, a separate task is launched to build an index on the specified column(s).
-2.  **Metadata Merging**: Once all per-fragment indexes are built, their metadata is collected and merged.
+1.  **Index Build Execution**: Lance Spark chooses an execution path based on the index method. Methods such as `btree`, `fts`, and `zonemap` can build physical index segments in parallel across fragments. `zonemap` publishes those segments directly as one logical index. Range-mode `btree` uses Spark repartitioning and sorted preprocessed data.
+2.  **Metadata Finalization**: Lance Spark merges or commits the resulting index metadata on the driver so the new logical index becomes visible atomically.
 3.  **Transactional Commit**: A new table version is committed with the new index information. The operation is atomic and ensures that concurrent reads are not affected.
 
 ## Notes and Limitations
 
-- **Index Methods**: The `btree` and `fts` methods are supported for scalar index creation.
-- **Index Replacement**: If you create an index with the same name as an existing one, the old index will be replaced by the new one. This is because the underlying implementation uses `replace(true)`.
+- **Index Methods**: The `zonemap`, `btree`, and `fts` methods are supported for scalar index creation.
+- **Zonemap Column Count**: Zonemap indexes currently support a single column only. The generic `CREATE INDEX` grammar accepts a column list, but Lance rejects multi-column zonemap creation.
+- **Index Replacement**: If you create an index with the same name as an existing one, the old index will be replaced by the new one.
+- **Deferred Training**: With `train = false` the index is registered empty and is populated later, either by re-running `CREATE INDEX` (a full distributed build that replaces the empty index) or, for incremental coverage of newly appended fragments, by `Dataset.optimizeIndices` in the SDK. The SQL `OPTIMIZE` command compacts fragments and does not train deferred indexes.
