@@ -362,19 +362,26 @@ public abstract class BaseFtsMatchPushdownTest {
     qb.setUseIndex(false);
     qb.setDistanceType(DistanceType.L2);
 
-    spark
-        .read()
-        .format(LanceDataSource.name)
-        .option(LanceSparkReadOptions.CONFIG_NEAREST, QueryUtils.queryToString(qb.build()))
-        .option(LanceSparkReadOptions.CONFIG_DATASET_URI, datasetUri)
-        .load()
-        .createOrReplaceTempView("fts_nearest_test");
+    String nearestJson = QueryUtils.queryToString(qb.build());
 
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            spark.sql("SELECT id FROM fts_nearest_test WHERE lance_match(body, 'hello')").collect(),
-        "Expected IllegalArgumentException for FTS + nearest in the same query");
+    // The nearest read option is rejected at schema-inference time (parseTypedFlags fail-fast)
+    // when Spark calls inferSchema/getTable during .load().
+    IllegalArgumentException exception =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                spark
+                    .read()
+                    .format(LanceDataSource.name)
+                    .option(LanceSparkReadOptions.CONFIG_NEAREST, nearestJson)
+                    .option(LanceSparkReadOptions.CONFIG_DATASET_URI, datasetUri)
+                    .load(),
+            "Expected IllegalArgumentException when nearest option is present");
+    assertTrue(
+        exception.getMessage().contains("nearest"), "Error message should mention 'nearest'");
+    assertTrue(
+        exception.getMessage().contains("VECTOR_SEARCH"),
+        "Error message should mention VECTOR_SEARCH as the replacement");
   }
 
   // ── helpers ──────────────────────────────────────────────────────────────
